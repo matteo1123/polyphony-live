@@ -1,0 +1,43 @@
+{
+  "name": "polyphony-live",
+  "version": "0.1.0",
+  "description": "Ephemeral multi-agent Hive Mind for real-time team collaboration",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon --exec node src/server.js",
+    "redis:start": "docker-compose up redis",
+    "up": "docker-compose up",
+    "down": "docker-compose down",
+    "logs": "docker-compose logs -f"
+  },
+  "keywords": [
+    "collaboration",
+    "real-time",
+    "ai",
+    "vector-search",
+    "ephemeral",
+    "websocket"
+  ],
+  "author": "Polyphony Team",
+  "license": "MIT",
+  "dependencies": {
+    "@redis/client": "^4.6.12",
+    "redis": "^4.6.12",
+    "socket.io": "^4.7.2",
+    "socket.io-client": "^4.7.2",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1",
+    "redis-vl": "^0.0.8"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "@types/node": "^20.10.6"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

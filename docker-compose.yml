@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis/redis-stack:latest
+    container_name: polyphony-redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"  # Redis Stack UI
+    environment:
+      - REDIS_ARGS=--maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - polyphony-network
+
+  node-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polyphony-server
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=3000
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./package.json:/app/package.json
+      - /app/node_modules
+    networks:
+      - polyphony-network
+    command: npm run dev
+
+volumes:
+  redis_data:
+
+networks:
+  polyphony-network:
+    driver: bridge
