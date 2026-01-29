@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -8,15 +8,35 @@ RUN apk add --no-cache python3 make g++
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci
+# Install production dependencies only
+RUN npm ci --only=production && npm cache clean --force
 
-# Copy source code and public files
-COPY src ./src
-COPY public ./public
+# Production stage
+FROM node:20-alpine
 
-# Expose port
-EXPOSE 3000
+WORKDIR /app
 
-# Start development server
-CMD ["npm", "run", "dev"]
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+# Copy dependencies from builder
+COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
+
+# Copy application code
+COPY --chown=nodejs:nodejs src ./src
+COPY --chown=nodejs:nodejs public ./public
+COPY --chown=nodejs:nodejs package*.json ./
+
+# Switch to non-root user
+USER nodejs
+
+# Expose port (Cloud Run sets PORT env var)
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 8080) + '/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+
+# Start production server
+CMD ["npm", "start"]

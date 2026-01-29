@@ -1,0 +1,47 @@
+# This file specifies files that are *not* uploaded to Google Cloud Platform
+.gcloudignore
+.git
+.gitignore
+
+# Node.js dependencies
+node_modules/
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test files
+test_*.mjs
+*_test.mjs
+
+# Documentation (optional - remove if you want to include)
+# README.md
+# QUICKSTART.md
+# PLAN.md
+
+# Scripts (optional - remove if needed in deployment)
+scripts/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Local development
+*.local
