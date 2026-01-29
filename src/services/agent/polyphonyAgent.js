@@ -140,9 +140,13 @@ export class PolyphonyAgent {
         };
       }
 
+      // Build chat history
+      const chatHistory = this.buildChatHistory(conversationHistory);
+      console.log(`Agent: chat history has ${chatHistory.length} messages`);
+
       // Start chat with tools
       const chat = this.model.startChat({
-        history: this.buildChatHistory(conversationHistory),
+        history: chatHistory,
         systemInstruction: {
           role: 'system',
           parts: [{ text: systemPrompt }]
@@ -150,7 +154,9 @@ export class PolyphonyAgent {
       });
 
       // ReAct loop
+      console.log(`Agent: sending message to Gemini...`);
       let response = await chat.sendMessage(content);
+      console.log(`Agent: received initial response`);
       let iterations = 0;
 
       while (iterations < MAX_ITERATIONS) {
@@ -381,10 +387,31 @@ Please analyze and create knowledge entries for key concepts.`;
 
   // Build chat history for Gemini
   buildChatHistory(conversationHistory) {
-    return conversationHistory.map(msg => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.content }]
-    }));
+    // Filter and fix history - Gemini requires:
+    // 1. First message must be from 'user'
+    // 2. Must alternate user/model
+    const filtered = [];
+    
+    for (const msg of conversationHistory) {
+      const role = msg.role === 'user' ? 'user' : 'model';
+      
+      // Skip if first message is not user
+      if (filtered.length === 0 && role !== 'user') {
+        continue;
+      }
+      
+      // Skip if same role as last message (should alternate)
+      if (filtered.length > 0 && filtered[filtered.length - 1].role === role) {
+        continue;
+      }
+      
+      filtered.push({
+        role,
+        parts: [{ text: msg.content }]
+      });
+    }
+    
+    return filtered;
   }
 
   // Build knowledge tree for UI display

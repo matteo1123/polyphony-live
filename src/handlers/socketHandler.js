@@ -47,6 +47,11 @@ export class SocketHandler {
         await this.handleHeartbeat(socket, data);
       });
 
+      // Vector cloud data request
+      socket.on('vectorcloud:request', async (data) => {
+        await this.handleVectorCloudRequest(socket, data);
+      });
+
       // Disconnect
       socket.on('disconnect', async () => {
         await this.handleDisconnect(socket);
@@ -439,5 +444,44 @@ export class SocketHandler {
     });
 
     console.log(`Settings updated in room ${roomId}: groupChatEnabled=${groupChatEnabled}`);
+  }
+
+  async handleVectorCloudRequest(socket, data) {
+    const session = this.userSessions.get(socket.id);
+    if (!session) {
+      socket.emit('error', { code: 'NOT_IN_ROOM', message: 'Must join a room first' });
+      return;
+    }
+
+    const { roomId } = session;
+
+    try {
+      // Get all knowledge entries for this room
+      const entries = await this.agent.vectorDB.getAllKnowledge(roomId);
+      
+      // Format for visualization
+      const points = entries.map(entry => ({
+        id: entry.id,
+        topic: entry.topic,
+        content: entry.content,
+        tags: entry.tags || [],
+        cluster: entry.tags?.[0] || 'uncategorized',
+        userId: entry.userId,
+        // Note: We don't send actual embeddings to client for privacy/efficiency
+        // Instead, the client will use the clustering info we provide
+      }));
+
+      socket.emit('vectorcloud:data', {
+        roomId,
+        points,
+        count: points.length,
+        timestamp: Date.now()
+      });
+
+      console.log(`Vector cloud data sent to ${session.userName}: ${points.length} points`);
+    } catch (error) {
+      console.error('Error fetching vector cloud data:', error);
+      socket.emit('error', { code: 'VECTOR_CLOUD_ERROR', message: 'Failed to fetch vector data' });
+    }
   }
 }

@@ -464,4 +464,394 @@ document.addEventListener('DOMContentLoaded', () => {
     URL.revokeObjectURL(url);
     addSystemMessage('Export downloaded!');
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VIEW TOGGLE & VECTOR CLOUD VISUALIZATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // View toggle elements
+  const canvasViewBtn = document.getElementById('canvasViewBtn');
+  const vectorCloudViewBtn = document.getElementById('vectorCloudViewBtn');
+  const canvasArea = document.getElementById('canvasArea');
+  const vectorCloudArea = document.getElementById('vectorCloudArea');
+  
+  let currentView = 'canvas';
+  let vectorCloudData = [];
+  let vectorCloud = null;
+
+  // View toggle handlers
+  canvasViewBtn.addEventListener('click', () => {
+    if (currentView !== 'canvas') {
+      currentView = 'canvas';
+      canvasViewBtn.classList.add('active');
+      vectorCloudViewBtn.classList.remove('active');
+      canvasArea.classList.remove('hidden');
+      vectorCloudArea.classList.add('hidden');
+    }
+  });
+
+  vectorCloudViewBtn.addEventListener('click', () => {
+    if (currentView !== 'vector') {
+      currentView = 'vector';
+      vectorCloudViewBtn.classList.add('active');
+      canvasViewBtn.classList.remove('active');
+      vectorCloudArea.classList.remove('hidden');
+      canvasArea.classList.add('hidden');
+      
+      // Initialize or refresh vector cloud
+      if (!vectorCloud) {
+        initVectorCloud();
+      }
+      requestVectorData();
+    }
+  });
+
+  // Vector Cloud Visualization Class
+  class VectorCloudVisualizer {
+    constructor(canvasId) {
+      this.canvas = document.getElementById(canvasId);
+      this.container = this.canvas.parentElement;
+      this.ctx = this.canvas.getContext('2d');
+      this.points = [];
+      this.clusters = new Map();
+      this.scale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.isDragging = false;
+      this.lastX = 0;
+      this.lastY = 0;
+      this.hoveredPoint = null;
+      this.showLabels = false;
+      
+      // Color palette for clusters
+      this.colors = [
+        '#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4',
+        '#8b5cf6', '#ef4444', '#84cc16', '#f97316', '#14b8a6'
+      ];
+      
+      this.resize();
+      this.setupEvents();
+      this.animate();
+    }
+
+    resize() {
+      const rect = this.container.getBoundingClientRect();
+      this.canvas.width = rect.width;
+      this.canvas.height = rect.height;
+      this.centerX = this.canvas.width / 2;
+      this.centerY = this.canvas.height / 2;
+    }
+
+    setupEvents() {
+      // Mouse interactions
+      this.canvas.addEventListener('mousedown', (e) => {
+        this.isDragging = true;
+        this.lastX = e.clientX;
+        this.lastY = e.clientY;
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (this.isDragging) {
+          const dx = e.clientX - this.lastX;
+          const dy = e.clientY - this.lastY;
+          this.offsetX += dx;
+          this.offsetY += dy;
+          this.lastX = e.clientX;
+          this.lastY = e.clientY;
+        }
+        this.updateHover(e);
+      });
+
+      window.addEventListener('mouseup', () => {
+        this.isDragging = false;
+      });
+
+      this.canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+        this.scale *= zoomFactor;
+        this.scale = Math.max(0.1, Math.min(5, this.scale));
+      });
+
+      window.addEventListener('resize', () => this.resize());
+    }
+
+    updateHover(e) {
+      const rect = this.canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left - this.offsetX - this.centerX) / this.scale;
+      const y = (e.clientY - rect.top - this.offsetY - this.centerY) / this.scale;
+      
+      let closest = null;
+      let closestDist = 20; // Hover radius
+
+      for (const point of this.points) {
+        const dx = point.x - x;
+        const dy = point.y - y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closest = point;
+        }
+      }
+
+      this.hoveredPoint = closest;
+      this.updateTooltip(e.clientX, e.clientY);
+    }
+
+    updateTooltip(mouseX, mouseY) {
+      const tooltip = document.getElementById('vectorTooltip');
+      
+      if (this.hoveredPoint) {
+        tooltip.classList.remove('hidden');
+        tooltip.style.left = (mouseX + 15) + 'px';
+        tooltip.style.top = (mouseY + 15) + 'px';
+        
+        document.getElementById('tooltipTitle').textContent = this.hoveredPoint.topic;
+        document.getElementById('tooltipContent').textContent = 
+          this.hoveredPoint.content.slice(0, 150) + '...';
+        document.getElementById('tooltipSimilarity').textContent = 
+          `Cluster: ${this.hoveredPoint.cluster}`;
+      } else {
+        tooltip.classList.add('hidden');
+      }
+    }
+
+    setData(points) {
+      // Project high-dimensional vectors to 2D using simple PCA-like approach
+      this.points = this.projectTo2D(points);
+      this.detectClusters();
+      this.updateLegend();
+      this.updateStats();
+      
+      // Auto-center
+      if (this.points.length > 0) {
+        const bounds = this.getBounds();
+        this.offsetX = this.centerX - (bounds.minX + bounds.maxX) / 2 * this.scale;
+        this.offsetY = this.centerY - (bounds.minY + bounds.maxY) / 2 * this.scale;
+      }
+    }
+
+    projectTo2D(points) {
+      // Simple force-directed layout for visualization
+      // In a real implementation, you'd use t-SNE or UMAP on the server
+      const projected = [];
+      
+      // Group by tags for clustering
+      const tagGroups = new Map();
+      points.forEach((p, i) => {
+        const tag = p.tags?.[0] || 'uncategorized';
+        if (!tagGroups.has(tag)) tagGroups.set(tag, []);
+        tagGroups.get(tag).push({ ...p, index: i });
+      });
+
+      // Arrange clusters in a circle
+      const clusterCount = tagGroups.size;
+      const clusterRadius = 200;
+      let clusterIdx = 0;
+
+      for (const [tag, groupPoints] of tagGroups) {
+        const angle = (clusterIdx / clusterCount) * Math.PI * 2;
+        const cx = Math.cos(angle) * clusterRadius;
+        const cy = Math.sin(angle) * clusterRadius;
+
+        // Arrange points within cluster
+        groupPoints.forEach((p, i) => {
+          const spread = 80;
+          const px = cx + (Math.random() - 0.5) * spread + Math.cos(i * 0.5) * 30;
+          const py = cy + (Math.random() - 0.5) * spread + Math.sin(i * 0.5) * 30;
+          
+          projected.push({
+            ...p,
+            x: px,
+            y: py,
+            cluster: tag,
+            color: this.colors[clusterIdx % this.colors.length]
+          });
+        });
+
+        clusterIdx++;
+      }
+
+      return projected;
+    }
+
+    detectClusters() {
+      this.clusters.clear();
+      for (const point of this.points) {
+        if (!this.clusters.has(point.cluster)) {
+          this.clusters.set(point.cluster, {
+            color: point.color,
+            count: 0
+          });
+        }
+        this.clusters.get(point.cluster).count++;
+      }
+    }
+
+    updateLegend() {
+      const legendContent = document.getElementById('legendContent');
+      legendContent.innerHTML = '';
+      
+      for (const [name, info] of this.clusters) {
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML = `
+          <span class="legend-color" style="background: ${info.color}"></span>
+          <span>${name} (${info.count})</span>
+        `;
+        legendContent.appendChild(item);
+      }
+    }
+
+    updateStats() {
+      document.getElementById('vectorCount').textContent = this.points.length;
+      document.getElementById('clusterCount').textContent = this.clusters.size;
+    }
+
+    getBounds() {
+      if (this.points.length === 0) return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+      
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      
+      for (const p of this.points) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      
+      return { minX, maxX, minY, maxY };
+    }
+
+    resetView() {
+      this.scale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
+    }
+
+    toggleLabels() {
+      this.showLabels = !this.showLabels;
+    }
+
+    animate() {
+      this.draw();
+      requestAnimationFrame(() => this.animate());
+    }
+
+    draw() {
+      // Clear canvas
+      this.ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-primary');
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+      this.ctx.save();
+      
+      // Apply transforms
+      this.ctx.translate(this.offsetX + this.centerX, this.offsetY + this.centerY);
+      this.ctx.scale(this.scale, this.scale);
+
+      // Draw connection lines for same cluster
+      this.ctx.strokeStyle = 'rgba(99, 102, 241, 0.1)';
+      this.ctx.lineWidth = 1 / this.scale;
+      
+      for (let i = 0; i < this.points.length; i++) {
+        for (let j = i + 1; j < this.points.length; j++) {
+          const p1 = this.points[i];
+          const p2 = this.points[j];
+          if (p1.cluster === p2.cluster) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(p1.x, p1.y);
+            this.ctx.lineTo(p2.x, p2.y);
+            this.ctx.stroke();
+          }
+        }
+      }
+
+      // Draw points
+      for (const point of this.points) {
+        const isHovered = point === this.hoveredPoint;
+        const radius = isHovered ? 8 : 5;
+        
+        // Glow effect for hovered point
+        if (isHovered) {
+          this.ctx.beginPath();
+          this.ctx.arc(point.x, point.y, radius * 2, 0, Math.PI * 2);
+          this.ctx.fillStyle = point.color + '40';
+          this.ctx.fill();
+        }
+        
+        // Main point
+        this.ctx.beginPath();
+        this.ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        this.ctx.fillStyle = point.color;
+        this.ctx.fill();
+        
+        // Border
+        this.ctx.strokeStyle = isHovered ? '#fff' : point.color;
+        this.ctx.lineWidth = isHovered ? 2 / this.scale : 1 / this.scale;
+        this.ctx.stroke();
+
+        // Label
+        if (this.showLabels || isHovered) {
+          this.ctx.fillStyle = '#fff';
+          this.ctx.font = `${12 / this.scale}px sans-serif`;
+          this.ctx.fillText(point.topic.slice(0, 20), point.x + 10, point.y + 4);
+        }
+      }
+
+      this.ctx.restore();
+    }
+  }
+
+  // Initialize vector cloud
+  function initVectorCloud() {
+    vectorCloud = new VectorCloudVisualizer('vectorCloud');
+    
+    // Setup controls
+    document.getElementById('resetZoomBtn').addEventListener('click', () => {
+      vectorCloud.resetView();
+    });
+    
+    document.getElementById('toggleLabelsBtn').addEventListener('click', (e) => {
+      vectorCloud.toggleLabels();
+      e.target.textContent = vectorCloud.showLabels ? 'Hide Labels' : 'Show Labels';
+    });
+
+    // Sync sidebar toggle
+    document.getElementById('toggleVectorSidebar').addEventListener('click', () => {
+      const sidebar = document.getElementById('vectorKnowledgeSidebar');
+      sidebar.classList.toggle('collapsed');
+      const icon = document.getElementById('toggleVectorSidebar').querySelector('.toggle-icon');
+      icon.textContent = sidebar.classList.contains('collapsed') ? '\u25C0' : '\u25B6';
+    });
+  }
+
+  // Request vector data from server
+  function requestVectorData() {
+    if (socket && socket.connected) {
+      socket.emit('vectorcloud:request', { roomId: spaceId });
+    }
+  }
+
+  // Handle vector data from server
+  socket?.on('vectorcloud:data', (data) => {
+    if (vectorCloud && data.points) {
+      vectorCloud.setData(data.points);
+    }
+  });
+
+  // Update knowledge tree in vector view when it changes
+  const originalUpdateKnowledgeTree = updateKnowledgeTree;
+  updateKnowledgeTree = function(data) {
+    originalUpdateKnowledgeTree(data);
+    
+    // Also update vector view sidebar
+    const vectorTree = document.getElementById('vectorKnowledgeTree');
+    if (data?.topics?.length) {
+      vectorTree.innerHTML = '';
+      for (const topic of data.topics) {
+        vectorTree.appendChild(createTopicNode(topic));
+      }
+    }
+  };
 });
