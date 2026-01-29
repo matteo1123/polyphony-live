@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Space - Polyphony.live</title>
+    <link rel="stylesheet" href="/css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  </head>
+  <body>
+    <!-- Name prompt modal -->
+    <div id="nameModal" class="modal">
+      <div class="modal-content">
+        <h2>Welcome to Polyphony</h2>
+        <p>Enter your display name to join the space</p>
+        <input
+          type="text"
+          id="nameInput"
+          class="name-input"
+          placeholder="Your name..."
+          maxlength="30"
+          autofocus
+        />
+        <button id="joinBtn" class="join-btn">Join Space</button>
+      </div>
+    </div>
+
+    <div class="space-container">
+      <header class="space-header">
+        <h1>Polyphony.live</h1>
+        <div class="space-info">
+          <!-- View Toggle Tabs -->
+          <div class="view-tabs">
+            <button id="canvasViewBtn" class="view-tab active">Shared Canvas</button>
+            <button id="vectorCloudViewBtn" class="view-tab">Vector Cloud</button>
+          </div>
+          <span class="connection-status">
+            <span id="statusDot" class="status-dot connecting"></span>
+            <span id="statusText">Connecting...</span>
+          </span>
+          <span id="userCount" class="user-count">0 users</span>
+          <!-- Admin controls -->
+          <div id="adminControls" class="admin-controls hidden">
+            <label class="toggle-label">
+              <input type="checkbox" id="groupChatToggle" />
+              <span>Group Chat</span>
+            </label>
+          </div>
+          <button id="exportBtn" class="export-btn">Export</button>
+        </div>
+      </header>
+
+      <main class="space-main">
+        <!-- Shared Canvas Area -->
+        <section class="canvas-area" id="canvasArea">
+          <div id="sharedCanvas" class="shared-canvas">
+            <div class="canvas-placeholder">
+              <p>Shared Canvas</p>
+              <p class="hint">Contributions from all participants will appear here</p>
+            </div>
+          </div>
+
+          <!-- Knowledge sidebar (collapsible) -->
+          <aside id="knowledgeSidebar" class="knowledge-sidebar collapsed">
+            <div class="sidebar-header">
+              <h3>Knowledge</h3>
+              <button id="toggleSidebar" class="toggle-sidebar">
+                <span class="toggle-icon">&#9664;</span>
+              </button>
+            </div>
+            <div id="knowledgeTree" class="knowledge-tree">
+              <p class="empty">No knowledge entries yet.</p>
+            </div>
+          </aside>
+        </section>
+
+        <!-- Vector Cloud Area (hidden by default) -->
+        <section class="canvas-area hidden" id="vectorCloudArea">
+          <div class="vector-cloud-container">
+            <div class="vector-cloud-toolbar">
+              <div class="vector-cloud-stats">
+                <span>Points: <span class="stat-value" id="vectorCount">0</span></span>
+                <span>Clusters: <span class="stat-value" id="clusterCount">0</span></span>
+                <span>Dimensions: <span class="stat-value">768</span></span>
+              </div>
+              <div>
+                <button id="resetZoomBtn" class="export-btn" style="margin-right: 0.5rem;">Reset View</button>
+                <button id="toggleLabelsBtn" class="export-btn">Show Labels</button>
+              </div>
+            </div>
+            <div class="vector-cloud-canvas" id="vectorCloudCanvas">
+              <canvas id="vectorCloud"></canvas>
+              <div class="vector-cloud-legend" id="vectorLegend">
+                <div class="legend-title">Topics</div>
+                <div id="legendContent"></div>
+              </div>
+              <div class="vector-tooltip hidden" id="vectorTooltip">
+                <div class="vector-tooltip-title" id="tooltipTitle"></div>
+                <div class="vector-tooltip-content" id="tooltipContent"></div>
+                <div class="vector-tooltip-similarity" id="tooltipSimilarity"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Knowledge sidebar (collapsible) -->
+          <aside id="vectorKnowledgeSidebar" class="knowledge-sidebar collapsed">
+            <div class="sidebar-header">
+              <h3>Knowledge</h3>
+              <button id="toggleVectorSidebar" class="toggle-sidebar">
+                <span class="toggle-icon">&#9664;</span>
+              </button>
+            </div>
+            <div id="vectorKnowledgeTree" class="knowledge-tree">
+              <p class="empty">No knowledge entries yet.</p>
+            </div>
+          </aside>
+        </section>
+
+        <!-- Chat panel -->
+        <section class="chat-panel">
+          <div class="chat-header">
+            <span id="chatModeLabel" class="chat-mode-label">Private chat with Agent</span>
+          </div>
+          <div id="chatMessages" class="chat-messages">
+            <!-- Messages will be inserted here -->
+          </div>
+
+          <div class="chat-input-area">
+            <div class="input-row">
+              <textarea
+                id="chatInput"
+                class="chat-input"
+                placeholder="Share your thoughts honestly..."
+                rows="1"
+              ></textarea>
+              <button id="uploadBtn" class="upload-btn" title="Upload file">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17,8 12,3 7,8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </button>
+              <button id="sendBtn" class="send-btn">Send</button>
+              <input
+                type="file"
+                id="fileInput"
+                accept=".pdf,.docx,.txt,.md"
+                multiple
+                hidden
+              />
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/visualizationRenderer.js"></script>
+    <script src="/js/space.js"></script>
+  </body>
+</html>

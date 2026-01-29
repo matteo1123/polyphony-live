@@ -23,15 +23,17 @@
   "author": "Polyphony Team",
   "license": "MIT",
   "dependencies": {
-    "@redis/client": "^4.6.12",
-    "redis": "^4.6.12",
-    "socket.io": "^4.7.2",
-    "socket.io-client": "^4.7.2",
-    "express": "^4.18.2",
+    "@google/generative-ai": "^0.21.0",
+    "convex": "^1.17.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "uuid": "^9.0.1",
-    "redis-vl": "^0.0.8"
+    "express": "^4.18.2",
+    "mammoth": "^1.6.0",
+    "pdf-parse": "^1.1.1",
+    "redis": "^4.7.0",
+    "socket.io": "^4.7.2",
+    "socket.io-client": "^4.7.2",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polyphony.live - Collaborative Knowledge Modeling</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Polyphony.live</h1>
+      <p class="tagline">Collaborative knowledge modeling with AI</p>
+    </header>
+
+    <main>
+      <div class="hero">
+        <p>Create a shared space where multiple people can contribute ideas, upload documents, and let AI help synthesize collective knowledge.</p>
+        <p class="ephemeral-note">All data is ephemeral - when the last person leaves, everything vanishes.</p>
+      </div>
+
+      <button id="createSpace" class="create-btn">
+        Generate Space
+      </button>
+
+      <div id="spaceLink" class="space-link hidden">
+        <p>Share this link:</p>
+        <div class="link-container">
+          <input type="text" id="spaceLinkInput" readonly>
+          <button id="copyLink" class="copy-btn">Copy</button>
+        </div>
+        <a id="goToSpace" href="#" class="go-btn">Enter Space</a>
+      </div>
+    </main>
+
+    <footer>
+      <p>Ephemeral by design. Export your knowledge before leaving.</p>
+    </footer>
+  </div>
+
+  <script src="/js/home.js"></script>
+</body>
+</html>

@@ -11,8 +11,9 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci
 
-# Copy source code
+# Copy source code and public files
 COPY src ./src
+COPY public ./public
 
 # Expose port
 EXPOSE 3000

@@ -31,11 +31,13 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PORT=3000
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY:-}
     depends_on:
       redis:
         condition: service_healthy
     volumes:
       - ./src:/app/src
+      - ./public:/app/public
       - ./package.json:/app/package.json
       - /app/node_modules
     networks:

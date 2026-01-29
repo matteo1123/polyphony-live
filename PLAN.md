@@ -1,546 +1,439 @@
-# Polyphony.live: Collaboration System Architecture
+# Polyphony.live: Shared Knowledge Modeling Platform
 
 ## Overview
 
-**Core Vision**: Transform meetings into asynchronous-feeling experiences where everyone speaks simultaneously, and an AI agent synthesizes all inputs in real-time into a coherent "Collective Memory."
+**Core Vision**: A collaborative space where multiple users contribute data (voice, text, files) to a shared knowledge model. An AI agent continuously renders the best representation of this collective knowledge on a shared page that all users see in real-time.
 
-Instead of:
-> "John speaks (2 min) → Sarah responds (2 min) → Bob adds (2 min)" = 6 minutes
+**Key Principle**: Ephemeral by design. Everything lives in RAM until the last user disconnects, then it vanishes. Users can export a comprehensive markdown file that captures the semantic state well enough to restore context in a future session.
 
-We enable:
-> Everyone speaks at once → Agent synthesizes in real-time → Discussions flow naturally = 2-3 minutes total
+---
+
+## Architecture: Event-Driven, Not Polling
+
+Unlike traditional synthesis loops, Polyphony.live is **reactive**:
+
+1. **Data arrives** → Ingest immediately → Update shared page
+2. **User asks a question** → Agent responds using vector search over all ingested content
+3. **User requests export** → Generate comprehensive markdown
+
+There is **no background synthesis loop**. The agent processes input as it arrives and responds when asked.
 
 ---
 
 ## System Architecture
 
-### 1. **Data Flow Overview**
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         USERS (Frontend)                        │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ User 1   │  │ User 2   │  │ User 3   │  │ User N   │       │
-│  │Listener  │  │Listener  │  │Listener  │  │Listener  │       │
-│  └─────┬────┘  └─────┬────┘  └─────┬────┘  └─────┬────┘       │
-└────────┼─────────────┼─────────────┼─────────────┼──────────────┘
-         │ WebSocket   │ WebSocket   │ WebSocket   │ WebSocket
-         │ (Stream)    │ (Stream)    │ (Stream)    │ (Stream)
-         └─────────────┼─────────────┼─────────────┘
-                       ▼
-        ┌──────────────────────────────┐
-        │   Node.js Server (Port 3000) │
-        │   Socket.io Message Queue    │
-        └──────────────┬───────────────┘
-                       │
-         ┌─────────────┴──────────────┐
-         │                            │
-         ▼                            ▼
-    ┌─────────────┐         ┌──────────────────┐
-    │ Vectorizer  │         │   Hive Agent     │
-    │ (OpenAI)    │         │  (LangGraph)     │
-    └─────┬───────┘         └────────┬─────────┘
-          │                          │
-          └──────────────┬───────────┘
-                         ▼
-           ┌──────────────────────────┐
-           │   Redis Vector Database  │
-           │  ┌────────────────────┐  │
-           │  │ Vector Store (VL)  │  │
-           │  │ (Embeddings + TTL) │  │
-           │  └────────────────────┘  │
-           │  ┌────────────────────┐  │
-           │  │ Metadata Store     │  │
-           │  │ (User Context)     │  │
-           │  └────────────────────┘  │
-           │  ┌────────────────────┐  │
-           │  │ Session Memory     │  │
-           │  │ (Conversation Log) │  │
-           │  └────────────────────┘  │
-           └──────────────┬───────────┘
-                          │
-         ┌────────────────┴────────────────┐
-         │                                 │
-         ▼                                 ▼
-    ┌──────────────┐            ┌──────────────────┐
-    │ Broadcast    │            │ Agent Memory     │
-    │ Synthesis    │            │ Context Building │
-    └─────┬────────┘            └──────────────────┘
-          │
-          ▼
-    ┌──────────────────────────────┐
-    │  Push to Users via WebSocket │
-    │  (Real-time Synthesis)       │
-    └──────────────────────────────┘
-```
-
----
-
-## 2. **Core Components**
-
-### **A. Frontend Listener (React)**
-- Captures user input (text/audio transcription)
-- Sends via WebSocket to server in real-time
-- Each message tagged with: `userId`, `timestamp`, `messageId`
-- Streams thoughts (doesn't wait for user to finish)
-
-**Message Format:**
-```json
-{
-  "type": "thought_stream",
-  "userId": "user-123",
-  "userName": "John",
-  "content": "I think we should...",
-  "timestamp": 1674567890000,
-  "messageId": "msg-uuid-123"
-}
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           USERS (Frontend)                              │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │              SHARED LIVE PAGE (Same for all users)               │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
+│  │  │  Agent's Best Representation of the Phenomenon              │ │  │
+│  │  │  ├── Key Topic A [expandable button]                        │ │  │
+│  │  │  ├── Key Topic B [expandable button]                        │ │  │
+│  │  │  ├── Conflict: X vs Y [highlighted]                         │ │  │
+│  │  │  └── Recent Insights [collapsible]                          │ │  │
+│  │  └─────────────────────────────────────────────────────────────┘ │  │
+│  │                                                                    │  │
+│  │  INPUT METHODS:                                                   │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────────────────────────────┐  │  │
+│  │  │ Voice    │ │ Text     │ │ File Upload (PDF/DOCX/TXT/MD)    │  │  │
+│  │  │ (Piper)  │ │ Chat     │ │                                  │  │  │
+│  │  └──────────┘ └──────────┘ └──────────────────────────────────┘  │  │
+│  │                                                                    │  │
+│  │  CLIENT-SIDE CONVERSATION HISTORY (lost on refresh)              │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ WebSocket (Socket.io)
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      Node.js Server (Express + Socket.io)               │
+│  ┌────────────────────────────────────────────────────────────────────┐│
+│  │ Event Handlers:                                                     ││
+│  │  • file:upload    → Parse → Extract text → Embed → Store           ││
+│  │  • voice:chunk    → Piper STT → Text → Embed → Store               ││
+│  │  • message:send   → Agent responds using vector search             ││
+│  │  • page:request   → Agent renders current state                    ││
+│  │  • export:request → Generate comprehensive markdown                 ││
+│  └────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+           ┌──────────────┐ ┌─────────────┐ ┌─────────────────┐
+           │ File Parser  │ │ Piper STT   │ │ Gemini 3 Flash  │
+           │ (PDF/DOCX/   │ │ (Voice →    │ │ (Agent Brain)   │
+           │  TXT/MD)     │ │  Text)      │ │                 │
+           └──────────────┘ └─────────────┘ └─────────────────┘
+                    │               │               │
+                    └───────────────┼───────────────┘
+                                    ▼
+           ┌─────────────────────────────────────────────────────┐
+           │              Redis Stack (Ephemeral)                │
+           │  ┌───────────────────────────────────────────────┐  │
+           │  │ Vector Store (embeddings + metadata)          │  │
+           │  │  • All ingested content as vectors            │  │
+           │  │  • Source tracking (file, voice, message)     │  │
+           │  │  • No TTL - lives until room closes           │  │
+           │  └───────────────────────────────────────────────┘  │
+           │  ┌───────────────────────────────────────────────┐  │
+           │  │ Room State                                    │  │
+           │  │  • Active users                               │  │
+           │  │  • Current page state (agent's representation)│  │
+           │  │  • Ingested content index                     │  │
+           │  └───────────────────────────────────────────────┘  │
+           └─────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### **B. Node.js Server + Socket.io**
-**Responsibilities:**
-1. Accept WebSocket connections from multiple users
-2. Validate & authenticate user sessions
-3. Queue incoming messages
-4. Route to Vectorizer & Hive Agent
-5. Broadcast synthesis responses back to users
+## Core Components
 
-**Key Endpoints/Events:**
-- `connection` - User joins session
-- `thought_stream` - Receive user input
-- `disconnect` - User leaves session
-- `synthesis_update` - Server broadcasts agent synthesis
-- `context_request` - User requests current shared context
+### 1. Shared Live Page
 
----
+All users see the **same page** - the agent's best representation of all ingested knowledge.
 
-### **C. Vectorizer Service**
-**Responsibility:** Convert text to embeddings + metadata storage
+**Features:**
+- Hierarchical/collapsible structure (topics as expandable buttons)
+- Real-time updates when new data is ingested
+- Abbreviated view by default, drill-down on demand
+- Highlights conflicts, consensus, key insights
 
-**Process:**
-1. Receive message from user
-2. Call OpenAI/Cohere API to generate embedding (1536 dims for GPT-4)
-3. Store in Redis Vector Index with metadata:
-   - `userId`, `userName`, `timestamp`, `original_text`
-   - TTL: 30 minutes (ephemeral)
-4. Return embedding to Hive Agent
-
-**Key Decision:** All embeddings computed immediately (no batching) for real-time responsiveness.
-
----
-
-### **D. Redis Vector Database (The Brain)**
-
-#### **Structure:**
-
+**Update Flow:**
 ```
-NAMESPACE: polyphony:hive:{sessionId}
-
-1. VECTOR INDEX: polyphony:hive:{sessionId}:vectors
-   ├─ Vector: [1536-dim embedding]
-   ├─ Metadata:
-   │  ├─ user_id (indexed for filtering)
-   │  ├─ user_name (indexed)
-   │  ├─ content (original text, searchable)
-   │  ├─ timestamp (indexed for sorting)
-   │  └─ message_id (unique key)
-   └─ TTL: 30 minutes (auto-cleanup)
-
-2. METADATA STORE: polyphony:hive:{sessionId}:metadata:{messageId}
-   ├─ Original text (full)
-   ├─ User context (role, department, etc.)
-   ├─ Synthesis count (how many times included in synthesis)
-   └─ Relevance score (computed by agent)
-
-3. CONVERSATION LOG: polyphony:hive:{sessionId}:log
-   ├─ Each entry: user message + agent response timestamp
-   ├─ Indexed by timestamp
-   └─ Persisted for session duration
-
-4. SESSION STATE: polyphony:hive:{sessionId}:state
-   ├─ active_users: [user1, user2, ...]
-   ├─ start_time: timestamp
-   ├─ synthesis_round: counter
-   ├─ last_synthesis: timestamp
-   └─ collective_themes: [theme1, theme2, ...]
-
-5. USER CONTEXT: polyphony:user:{userId}
-   ├─ preferences (verbosity, focus areas)
-   ├─ contribution_count
-   ├─ last_activity
-   └─ individual_feedback (what user said they care about)
+New data ingested
+    ↓
+Agent re-evaluates representation
+    ↓
+Broadcast updated page to all clients
+    ↓
+All users see the same updated view
 ```
 
----
+### 2. Input Methods
 
-### **E. Hive Agent (LangGraph-based)**
+#### A. Voice Input (Piper STT)
+- Browser captures audio
+- Streams to server
+- Piper converts to text
+- Text is embedded and stored
 
-**Responsibilities:**
-1. Continuous synthesis loop (every 3-5 seconds)
-2. Vector similarity search across all users
-3. Identify patterns & conflicts
-4. Generate real-time insights
-5. Maintain per-user conversation state
-6. Manage individual user contexts
+#### B. Text Chat
+- User types message
+- Agent responds (with access to all vector content)
+- Response broadcast to all users
+- Conversation history stored **client-side only**
 
-**Synthesis Loop Algorithm:**
+#### C. File Upload
+Supported formats:
+- **TXT** - Direct text extraction
+- **MD** - Direct text extraction
+- **PDF** - pdf-parse or similar
+- **DOCX** - mammoth or similar
 
+**Flow:**
 ```
-EVERY 3-5 SECONDS:
-
-1. VECTOR RANGE SEARCH
-   - Query: "What are the main themes?"
-   - Range: Similarity > 0.75
-   - Filter: Last 5 minutes of messages
-   - Return: Grouped by semantic similarity
-
-2. PATTERN DETECTION
-   - Identify converging viewpoints (agreement)
-   - Identify conflicting viewpoints (disagreement)
-   - Identify new topics introduced
-   - Calculate "temperature" (consensus level 0-100)
-
-3. CONTEXT ASSEMBLY
-   - For EACH user individually:
-     a. What did they say?
-     b. How does it relate to collective themes?
-     c. What questions might they have?
-     d. What connections should we highlight?
-
-4. SYNTHESIS GENERATION
-   - Build prompt:
-     * All user inputs (vectorized)
-     * Detected patterns
-     * Consensus level
-     * Unresolved conflicts
-   
-   - Call LLM (GPT-4) to generate:
-     * Collective summary (what we've learned)
-     * Per-user insights (tailored to each person)
-     * Questions to deepen discussion
-     * Areas of consensus/conflict
-
-5. BROADCAST TO USERS
-   - Send personalized synthesis to each user:
-     {
-       "type": "synthesis_update",
-       "collective_summary": "...",
-       "your_perspective": "How John's point fits in",
-       "emerging_themes": [...],
-       "conflicts_detected": [...],
-       "next_steps": "..."
-     }
-
-6. UPDATE MEMORY
-   - Store synthesis in Redis:
-     * Link to message IDs that informed it
-     * Timestamp
-     * User feedback (if they react)
-   - Update conversation log
-   - Mark relevant vectors as "synthesized"
+User uploads file
+    ↓
+Server parses → extracts text
+    ↓
+Text chunked (if large)
+    ↓
+Each chunk embedded (Gemini)
+    ↓
+Stored in Redis vector DB
+    ↓
+Agent updates shared page
+    ↓
+All users see update
 ```
 
----
-
-### **F. Per-User Conversation Thread**
-
-Each user maintains **isolated but synchronized** conversations:
-
-**User 1's View:**
-```
-Agent: "John, you mentioned X. Sarah also brought up Y which aligns with X."
-John: "Yes, but did you see that Bob said Z?"
-Agent: "Good point - Z challenges the consensus on X. Let me synthesize..."
-```
-
-**User 2's View (Same Time, Different Perspective):**
-```
-Agent: "Sarah, John and you are actually on the same page about X."
-Sarah: "Wait, Bob said what about Z?"
-Agent: "Bob is concerned that Z might contradict our X consensus..."
-```
-
-**Key Insight:** Users see the SAME synthesis, but their context is personalized. The agent acts as a translator between different perspectives.
-
----
-
-## 3. **Real-Time Workflow Example**
-
-### **Scenario: 3-person brainstorm meeting (2 minutes)**
-
-**T=0s**: Session starts
-- Alice, Bob, Charlie join
-
-**T=5s**: Alice speaks
-- Message: "We need better customer analytics"
-- Vectorized & stored
-- Agent notes: Theme A (Analytics Importance)
-
-**T=8s**: Bob speaks (overlapping)
-- Message: "Our current dashboard is too slow"
-- Vectorized & stored
-- Agent detects: Semantic similarity to Alice (0.82)
-
-**T=12s**: Charlie speaks (overlapping)
-- Message: "I want real-time insights, not batch reports"
-- Vectorized & stored
-- Agent detects: Alignment with Alice + Bob (0.89)
-
-**T=15s**: FIRST SYNTHESIS (after 3-5 messages)
-- Agent identifies: Consensus emerging around "real-time analytics"
-- Broadcasts to all 3 users:
-  ```
-  Collective: "You're all aligned on needing real-time analytics"
-  Alice's note: "Both Bob and Charlie want real-time, not batch"
-  Bob's note: "Alice started this, Charlie wants speed too"
-  Charlie's note: "Alice & Bob both concerned with performance"
-  Questions: "What's your timeline? Budget? Current tech stack?"
-  ```
-
-**T=20s**: Alice responds
-- Message: "Timeline: 2 weeks, Budget: $50k"
-- Agent updates Alice's context
-- Vector: Stored with metadata linking to previous synthesis
-
-**T=25s**: Bob responds
-- Message: "That won't work. Need 4 weeks minimum"
-- Agent detects: CONFLICT detected (Alice vs Bob on timeline)
-- Marks for highlighting in next synthesis
-
-**T=30s**: SECOND SYNTHESIS (conflict resolution)
-- Agent synthesizes the conflict:
-  ```
-  Collective: "Timeline gap: Alice wants 2 weeks, Bob needs 4"
-  Alice's note: "Bob's concern about 2-week timeline - is implementation the constraint?"
-  Bob's note: "Alice pushing aggressive timeline. Help set realistic expectations?"
-  Charlie's note: "Both concerned about timeline. Charlie hasn't weighed in yet"
-  Action: "Let's discuss: What's blocking a 2-week implementation?"
-  ```
-
-**T=35s**: Charlie speaks
-- Message: "We could use no-code tools for 2 weeks, then rebuild properly"
-- Agent synthesizes: CONFLICT RESOLUTION emerging
-
-**T=40s**: FINAL SYNTHESIS
-- Agent generates session summary
-- Decision: "2-week MVP with no-code, 4-week rebuild"
-- All users see consensus achieved
-- Ready for next phase (action items, owners, etc.)
-
-**T=120s**: Session ends or continues to next topic
-
-**Result**: What would take 15 minutes in a traditional meeting took 2 minutes because:
-- Everyone spoke simultaneously (no waiting)
-- Agent synthesized in real-time
-- Conflicts surfaced & resolved instantly
-- Decisions were explicit & shared
-
----
-
-## 4. **Vector Search Queries**
-
-### **Example 1: Finding Semantic Patterns**
-```redis
-FT.SEARCH polyphony:hive:{sessionId}:vectors
-  "@timestamp:[30m AGO TO NOW]"
-  "=>(knn 5 @embedding $query_vec)"
-  RETURN embedding_distance
-```
-
-**Result:** Top 5 semantically similar messages in last 30 minutes
-
-### **Example 2: User-Filtered Search**
-```redis
-FT.SEARCH polyphony:hive:{sessionId}:vectors
-  "@user_id:{user123} @timestamp:[5m AGO TO NOW]"
-  RETURN content, timestamp
-```
-
-**Result:** All of User 123's messages in last 5 minutes
-
-### **Example 3: Conflict Detection**
-```
-Query 1 Vector: "We should move fast"
-Query 2 Vector: "We need to be careful"
-Result: Similarity 0.15 (low) = Conflict detected
-```
-
----
-
-## 5. **Ephemeral State Management**
-
-### **Session Lifecycle:**
-
-```
-1. SESSION CREATION
-   - First user joins
-   - SessionId generated (UUID)
-   - TTL set to 4 hours
-   - State: {"active_users": ["user1"], "start_time": now}
-
-2. ACTIVE PHASE
-   - Users join/leave dynamically
-   - Update active_users list
-   - All vectors & metadata stored with 30-min TTL
-   - Conversation log maintained
-
-3. CLEANUP TRIGGER
-   - Last user disconnects
-   - active_users.length == 0
-   - Start cleanup process:
-     a. Query all vectors for session
-     b. Generate final markdown summary
-     c. Offer download to last user
-     d. Wait 5 minutes (users can re-join)
-
-4. FINAL DELETION
-   - After 5-minute grace period:
-     a. Delete all vectors
-     b. Delete metadata
-     c. Delete conversation log
-     d. Delete session state
-     e. Archive summary to S3 (optional)
-```
-
-### **Export Flow (Before Deletion):**
+### 3. AI Agent (Gemini 3 Flash)
 
 ```javascript
-// When last user leaves:
-async function generateSessionSummary(sessionId) {
-  const vectors = await redis.querySession(sessionId);
-  const log = await redis.getConversationLog(sessionId);
-  
-  const summary = await agent.generateMarkdown({
-    messages: vectors,
-    log: log,
-    format: 'markdown'
-  });
-  
-  // Generate downloadable summary:
-  // # Collective Memory: [Date] [Duration]
-  // ## Participants: [User List]
-  // ## Main Themes: [...]
-  // ## Decisions Made: [...]
-  // ## Action Items: [...]
-  // ## Unresolved Items: [...]
+// DO NOT MODIFY - Model specified by user, verified from docs
+const MODEL = "gemini-3-flash-preview";
+```
+
+**Agent Tools:**
+1. `getAllContent()` - Retrieve full text of all ingested content
+2. `vectorSearch(query, k)` - Semantic search over all content
+3. `getContentBySource(sourceId)` - Get specific file/message content
+4. `createRelationship(from, to, type, evidence)` - Link content nodes
+5. `getRelationships(contentId)` - Get all relationships for a node
+6. `queryRelationships(type)` - Find all relationships of a type (e.g., "contradicts")
+
+**Agent Responsibilities:**
+- Respond to user messages using relevant context
+- Render the shared page representation (hierarchical, never-delete, always-contextualize)
+- Create and maintain relationship objects between content
+- Generate comprehensive markdown exports
+
+### 4. Hierarchical Representation Model
+
+**Core Principle**: Nothing is deleted, only reorganized and abbreviated.
+
+On each new input, the agent:
+1. Ingests content into vector DB
+2. Considers the **full corpus** (complete picture)
+3. Identifies where new content fits in existing hierarchy
+4. Creates relationship objects linking to related content
+5. Possibly reorganizes (a topic may become a subtopic of a newly-emerged theme)
+6. Adjusts detail levels (abbreviates less critical areas)
+7. Broadcasts updated page to all users
+
+**As Corpus Grows:**
+- Top-level stays readable (major themes)
+- Subtopics collapse but remain present
+- Details accessible via drill-down
+- Abbreviation is presentational, not data loss
+
+### 5. Relationship Junction Objects
+
+Like graph DB edges, but as first-class objects with their own data.
+
+**Structure:**
+```
+Relationship {
+  id: uuid
+  from: content_id
+  to: content_id
+  type: "supports" | "contradicts" | "elaborates" | "depends_on" | "supersedes" | "parent_of"
+  strength: 0.0 - 1.0
+  evidence: "Why this relationship exists"
+  discovered_at: timestamp
+  discovered_by: "ingestion" | "agent_reorg" | "user"
 }
+```
+
+**Relationship Types:**
+| Type | Meaning |
+|------|---------|
+| `supports` | A provides evidence for B |
+| `contradicts` | A conflicts with B |
+| `elaborates` | A adds detail to B |
+| `depends_on` | A requires B to make sense |
+| `supersedes` | A replaces/updates B |
+| `parent_of` | A is a theme containing B as subtopic |
+
+**Redis Storage:**
+```
+# Content nodes
+content:{id} → {text, embedding, source, timestamp, ...}
+
+# Relationship objects (junction table pattern)
+relationship:{id} → {from, to, type, strength, evidence, ...}
+
+# Indexes for fast lookups
+content:{id}:rels:outgoing → [rel_id, ...]
+content:{id}:rels:incoming → [rel_id, ...]
+relationships:by_type:{type} → [rel_id, ...]
+```
+
+**Value:**
+- Query "show all contradictions" instantly
+- Explain why things are linked
+- Relationships evolve as context grows
+- Hierarchies are explicit (parent_of relationships)
+
+### 6. Client-Side Conversation
+
+- Chat history lives in browser localStorage/memory
+- Lost on page refresh
+- But the **knowledge** persists in vector DB
+- User can continue asking questions, agent still has all context
+
+### 7. Markdown Export
+
+**Critical Requirement**: Export must be comprehensive enough that importing it into a new session restores the semantic state.
+
+**Export Structure:**
+```markdown
+# Polyphony Session: [Topic/Title]
+Generated: [timestamp]
+Participants: [count]
+
+## Key Topics
+
+### Topic A
+[Full content/summary]
+- Sub-point 1
+- Sub-point 2
+
+### Topic B
+[Full content/summary]
+
+## Conflicts & Tensions
+- X vs Y: [description]
+
+## Consensus Points
+- [agreed items]
+
+## Source Materials
+### Uploaded Files
+- filename.pdf: [summary]
+- document.docx: [summary]
+
+### Voice Contributions
+- [transcripts or summaries]
+
+### Chat Highlights
+- [key exchanges]
+
+## Raw Content Index
+[For restoration - all key text that would be needed to rebuild vector DB]
+```
+
+**Restoration Flow:**
+```
+User uploads previous session's markdown
+    ↓
+Agent ingests and chunks
+    ↓
+Key topics re-emerge naturally
+    ↓
+Session effectively restored at semantic level
 ```
 
 ---
 
-## 6. **Implementation Roadmap**
+## Data Flow Examples
 
-### **Phase 1: Core Infrastructure** ✅ (DONE)
-- [x] Docker-compose with Redis Stack
-- [x] Node.js server with Socket.io
-- [x] Basic message routing
-- [x] Redis client setup
+### Example 1: File Upload
+```
+1. User drags PDF into upload zone
+2. Server receives file via Socket.io binary
+3. pdf-parse extracts text
+4. Text split into ~500 token chunks
+5. Each chunk → Gemini embedding → Redis vector store
+6. Agent regenerates shared page
+7. All clients receive page update
+8. Users see new topic appear on shared view
+```
 
-### **Phase 2: Vectorization & Storage** (NEXT)
-- [ ] OpenAI integration for embeddings
-- [ ] Redis Vector Index setup
-- [ ] TTL management
-- [ ] Metadata storage
+### Example 2: Voice Input
+```
+1. User clicks mic, speaks
+2. Audio chunks stream to server
+3. Piper STT converts to text
+4. Text embedded and stored
+5. Agent updates page
+6. All users see contribution
+```
 
-### **Phase 3: Hive Agent Core**
-- [ ] LangGraph state machine
-- [ ] Synthesis loop (3-5 second cycles)
-- [ ] Pattern detection algorithm
-- [ ] Conflict detection
+### Example 3: Question/Response
+```
+1. User types: "What are the main disagreements?"
+2. Server receives message
+3. Agent does vector search for conflict-related content
+4. Agent generates response using Gemini
+5. Response sent to user (stored client-side)
+6. Response also broadcast so all users see it
+```
 
-### **Phase 4: Real-time Broadcast**
-- [ ] Per-user synthesis generation
-- [ ] WebSocket broadcast optimization
-- [ ] Message deduplication
-- [ ] Feedback loop
-
-### **Phase 5: Persistence & Export**
-- [ ] Conversation logging
-- [ ] Summary generation (Markdown)
-- [ ] Export to PDF/JSON
-- [ ] Session cleanup
-
-### **Phase 6: Frontend Integration**
-- [ ] React listener component
-- [ ] Real-time synthesis display
-- [ ] User context UI
-- [ ] Download summary feature
+### Example 4: Session End & Export
+```
+1. User clicks "Export"
+2. Agent generates comprehensive markdown
+3. User downloads file
+4. Last user disconnects
+5. Redis data deleted
+6. Everything vanishes
+```
 
 ---
 
-## 7. **Technical Decisions & Rationale**
+## Technical Stack
+
+| Component | Technology | Notes |
+|-----------|------------|-------|
+| Runtime | Node.js 20+ | |
+| Server | Express + Socket.io | Real-time bidirectional |
+| Database | Redis Stack | Vector search, ephemeral |
+| AI Model | Gemini 3 Flash | DO NOT MODIFY |
+| STT | Piper | Local, fast, privacy-friendly |
+| PDF Parse | pdf-parse | Node library |
+| DOCX Parse | mammoth | Node library |
+| Embeddings | Gemini | Same model for consistency |
+| Frontend | TBD (React/Vue/Svelte) | Shared reactive view |
+
+---
+
+## Implementation Phases
+
+### Phase 1: File Ingestion Pipeline
+- [ ] File upload handler (Socket.io binary)
+- [ ] PDF parser integration (pdf-parse)
+- [ ] DOCX parser integration (mammoth)
+- [ ] TXT/MD direct ingestion
+- [ ] Text chunking logic
+- [ ] Gemini embedding integration
+- [ ] Redis vector storage
+
+### Phase 2: Gemini Agent Core
+- [ ] Gemini 3 Flash client setup
+- [ ] Agent tools (getAllContent, vectorSearch)
+- [ ] Message response handler
+- [ ] Page rendering logic
+
+### Phase 3: Shared Page System
+- [ ] Page state structure
+- [ ] Broadcast mechanism
+- [ ] Client rendering (collapsible/expandable)
+- [ ] Real-time sync
+
+### Phase 4: Voice Input (Piper)
+- [ ] Audio capture (browser)
+- [ ] Stream to server
+- [ ] Piper STT integration
+- [ ] Text → embedding → storage flow
+
+### Phase 5: Export System
+- [ ] Comprehensive markdown generation
+- [ ] Download mechanism
+- [ ] Import/restore flow
+
+### Phase 6: Session Management
+- [ ] Room creation/joining
+- [ ] User tracking
+- [ ] Cleanup on last disconnect
+- [ ] Grace period handling
+
+---
+
+## Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| **WebSocket (Socket.io)** | Low-latency bidirectional communication; handles simultaneous connections |
-| **Redis Vector DB** | Sub-millisecond similarity search; built-in TTL for ephemeral data |
-| **LangGraph** | Explicit state management; handles complex agent workflows |
-| **OpenAI Embeddings** | High-quality semantic search; battle-tested for production |
-| **3-5 sec synthesis loop** | Fast enough for real-time feel; slow enough to batch messages |
-| **Per-user conversations** | Users feel heard individually; reduces "lost in the crowd" feeling |
-| **Markdown export** | Human-readable; version control friendly; shareable |
+| **Event-driven, no synthesis loop** | Simpler, more responsive, processes data as it arrives |
+| **Same view for all users** | True shared context, everyone sees what the agent sees |
+| **Client-side conversation history** | Keeps server stateless for chat, reduces complexity |
+| **Comprehensive MD export** | Enables semantic restoration without exact state preservation |
+| **Gemini 3 Flash** | User-specified, fast, capable |
+| **Piper STT** | Local processing, no external API dependency for voice |
+| **Collapsible UI** | Handles information density without overwhelming |
 
 ---
 
-## 8. **Metrics & Monitoring**
+## Removed from Original Plan
 
-### **Performance KPIs:**
-- **Message-to-Vector latency:** < 200ms
-- **Vector search latency:** < 50ms
-- **Synthesis generation time:** < 2 seconds
-- **WebSocket broadcast latency:** < 100ms
-- **Session memory usage:** < 10MB per active session
+The following were in the original architecture but are **no longer part of the design**:
 
-### **Business KPIs:**
-- **Meeting duration reduction:** Target 60% reduction
-- **Decision clarity:** Post-meeting survey
-- **User engagement:** Concurrent connections per session
-- **Export adoption:** % of sessions with export
+- ~~3-5 second synthesis loop~~ → Replaced with event-driven updates
+- ~~Per-user personalized views~~ → All users see same shared page
+- ~~LangGraph state machine~~ → Simple agent with tools
+- ~~OpenAI/Cohere embeddings~~ → Using Gemini for consistency
+- ~~30-minute TTL on vectors~~ → Data lives until room closes
+- ~~Automatic periodic synthesis~~ → Agent responds on-demand
 
 ---
 
-## 9. **Security & Privacy Considerations**
+## Open Questions / Future
 
-1. **Data Encryption:**
-   - Redis data at rest (TLS in Hetzner)
-   - WebSocket connections use WSS (secure)
-
-2. **Access Control:**
-   - Session-based auth (JWT tokens)
-   - Users can only see own context, not others' private metadata
-
-3. **Ephemeral By Design:**
-   - 30-minute TTL on all vectors
-   - Session cleanup after 4 hours inactive
-   - No permanent storage of raw conversations (unless opted-in)
-
-4. **API Rate Limiting:**
-   - Prevent spam/DOS via OpenAI API
-   - User message throttling
-
----
-
-## 10. **Future Enhancements**
-
-- [ ] Multi-language support (automatic translation)
-- [ ] Tone detection (angry, excited, confused)
-- [ ] Action item assignment (AI-extracted from synthesis)
-- [ ] Async continuation (users join later to see summary + continue)
-- [ ] Integration with Slack/Teams (cross-platform)
-- [ ] Audio transcription (real-time speech-to-text)
-- [ ] Persistent archives (optional opt-in)
-- [ ] Custom LLM models (fine-tuned for specific domains)
-
----
-
-## Summary
-
-**Polyphony.live** transforms traditional meetings by:
-1. **Eliminating wait time** (everyone speaks simultaneously)
-2. **Synthesizing in real-time** (agent finds patterns instantly)
-3. **Personalizing context** (each user sees relevant connections)
-4. **Maintaining coherence** (collective memory via vector DB)
-5. **Respecting privacy** (ephemeral by default)
-
-The result: **Faster, smarter, more inclusive meetings.**
+- Collapsible UI component library choice
+- Maximum file size limits
+- Chunking strategy optimization
+- Multi-room support (multiple parallel sessions)
+- Authentication/user identity
+- Rate limiting for AI calls

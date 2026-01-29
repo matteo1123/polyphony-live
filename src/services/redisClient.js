@@ -1,4 +1,4 @@
-import { createClient } from '@redis/client';
+import { createClient } from 'redis';
 
 export class RedisClient {
   constructor(host = 'localhost', port = 6379) {
@@ -38,30 +38,36 @@ export class RedisClient {
     }
   }
 
-  // Store thought snippet with TTL
-  async storeThought(roomId, userId, content, embedding = null, ttl = 3600) {
+  // Store thought/content snippet
+  // TTL: null = no expiration (lives until room cleanup), number = seconds until expiration
+  async storeThought(roomId, userId, content, embedding = null, ttl = null) {
     const thoughtId = `${roomId}:thought:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`;
     const thoughtData = {
       id: thoughtId,
       roomId,
       userId,
       content,
-      embedding,
-      timestamp: Date.now(),
-      ttl
+      timestamp: Date.now().toString()
     };
+
+    // Only add embedding if provided
+    if (embedding) {
+      thoughtData.embedding = JSON.stringify(embedding);
+    }
 
     // Store in hash
     await this.client.hSet(thoughtId, thoughtData);
-    
+
     // Add to sorted set for quick retrieval by room and time
     await this.client.zAdd(`${roomId}:thoughts`, {
       score: Date.now(),
       value: thoughtId
     });
 
-    // Set TTL
-    await this.client.expire(thoughtId, ttl);
+    // Only set TTL if specified (null = no expiration, ephemeral until room closes)
+    if (ttl !== null && ttl > 0) {
+      await this.client.expire(thoughtId, ttl);
+    }
 
     return thoughtId;
   }
