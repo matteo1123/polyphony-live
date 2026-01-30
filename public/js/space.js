@@ -286,7 +286,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   chatInput.addEventListener('input', () => {
     chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 100) + 'px';
+    const newHeight = Math.min(chatInput.scrollHeight, 80);
+    chatInput.style.height = newHeight + 'px';
+    // Enable scrolling when at max height
+    chatInput.style.overflowY = newHeight >= 80 ? 'auto' : 'hidden';
   });
 
   // File upload

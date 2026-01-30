@@ -1,0 +1,57 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.combined'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/polyphony-live:$COMMIT_SHA'
+      - '.'
+    timeout: 600s  # 10 minutes
+
+  # Push the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/polyphony-live:$COMMIT_SHA'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'polyphony-live'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/polyphony-live:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'GOOGLE_AI_API_KEY=${_GOOGLE_AI_API_KEY}'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '1'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '10'
+      - '--timeout'
+      - '300'
+      - '--concurrency'
+      - '100'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 900s  # 15 minutes total
+
+substitutions:
+  _GOOGLE_AI_API_KEY: ''  # Set via command line: --substitutions=_GOOGLE_AI_API_KEY=your_key
+
+images:
+  - 'gcr.io/$PROJECT_ID/polyphony-live:$COMMIT_SHA'
