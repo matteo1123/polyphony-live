@@ -28,8 +28,11 @@ export class ToolExecutor {
         case TOOLS.RENDER_VISUALIZATION:
           return await this.executeRenderVisualization(args, context);
 
-        case TOOLS.ADD_TO_CANVAS:
-          return await this.executeAddToCanvas(args, context);
+        case TOOLS.CONTRIBUTE:
+          return await this.executeContribute(args, context);
+
+        case TOOLS.REFRESH_CANVAS:
+          return await this.executeRefreshCanvas(args, context);
 
         default:
           return { error: `Unknown tool: ${toolName}` };
@@ -139,31 +142,68 @@ export class ToolExecutor {
     };
   }
 
-  // Add to canvas tool
-  async executeAddToCanvas(args, context) {
-    const { type, content, relatedTo } = args;
-    const { userName } = context;
+  // Unified contribute tool - adds to canvas AND knowledge base
+  async executeContribute(args, context) {
+    const { type, title, content, importance = 5, tags = [] } = args;
+    const { roomId, userId, userName } = context;
 
-    if (!type || !content) {
-      return { error: 'type and content are required' };
+    if (!type || !title || !content) {
+      return { error: 'type, title, and content are required' };
     }
 
+    // 1. Add to knowledge base (vector DB)
+    let knowledgeEntry;
+    try {
+      knowledgeEntry = await this.vectorDB.createKnowledgeEntry(
+        roomId,
+        userId,
+        title,
+        content,
+        [...tags, type, 'contribution'],
+        []
+      );
+    } catch (e) {
+      console.warn('Failed to create knowledge entry:', e.message);
+    }
+
+    // 2. Add to canvas via callback
     const contribution = {
       type,
+      title,
       content,
+      importance,
       userName: userName || 'Anonymous',
-      relatedTo: relatedTo || null
+      tags
     };
 
-    // Call the callback to add to canvas
     if (this.canvasCallback) {
       await this.canvasCallback(context, contribution);
     }
 
     return {
       success: true,
-      message: `Added ${type} to shared canvas`,
-      type
+      message: `Contributed "${title}" to collective understanding`,
+      type,
+      title,
+      knowledgeEntryId: knowledgeEntry?.id,
+      note: 'Added to both canvas (visible to all) and knowledge base (searchable)'
+    };
+  }
+
+  // Refresh canvas tool
+  async executeRefreshCanvas(args, context) {
+    const { reason } = args;
+    const { roomId, userName } = context;
+
+    // The actual refresh is handled by the LangGraphAgent
+    // This tool just signals that a refresh was requested
+    console.log(`ToolExecutor: canvas refresh requested by ${userName} - ${reason}`);
+
+    return {
+      success: true,
+      message: 'Canvas refresh triggered',
+      reason,
+      note: 'The canvas will be redrawn with all current knowledge, organized hierarchically by importance'
     };
   }
 

@@ -1,0 +1,863 @@
+/**
+ * LangGraph Agent for Polyphony
+ * 
+ * Architecture:
+ * - The agent maintains a hierarchical understanding of the conversation
+ * - The shared canvas represents the agent's "full picture" of the phenomena
+ * - Users can ask questions (private) to get zoomed-in details
+ * - The canvas adapts - old irrelevant info is replaced by new relevant info
+ * - Information is organized by importance (most central/important first)
+ */
+
+import { StateGraph, END, Annotation } from '@langchain/langgraph';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { SystemMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
+import { v4 as uuidv4 } from 'uuid';
+
+// Model configuration
+const MODEL_NAME = 'gemini-2.0-flash';
+const MAX_ITERATIONS = 5;
+
+/**
+ * Canvas State - Represents the agent's hierarchical understanding
+ */
+class CanvasState {
+  constructor(roomId, io) {
+    this.roomId = roomId;
+    this.io = io;
+    this.canvas = {
+      version: 0,
+      lastUpdated: Date.now(),
+      centralIdea: null, // The core concept/phenomenon being discussed
+      hierarchy: [] // Hierarchical structure of understanding
+    };
+  }
+
+  /**
+   * Update the canvas with new hierarchical understanding
+   */
+  async update(hierarchicalData) {
+    this.canvas.version++;
+    this.canvas.lastUpdated = Date.now();
+    
+    if (hierarchicalData.centralIdea) {
+      this.canvas.centralIdea = hierarchicalData.centralIdea;
+    }
+    
+    if (hierarchicalData.hierarchy) {
+      this.canvas.hierarchy = hierarchicalData.hierarchy;
+    }
+
+    // Broadcast to all users
+    this.io.to(this.roomId).emit('canvas:full_update', {
+      canvas: this.canvas,
+      timestamp: Date.now()
+    });
+
+    console.log(`CanvasState: updated to version ${this.canvas.version} for room ${this.roomId}`);
+    return this.canvas;
+  }
+
+  /**
+   * Get current canvas
+   */
+  get() {
+    return this.canvas;
+  }
+
+  /**
+   * Export canvas as markdown (hierarchical order)
+   */
+  exportToMarkdown() {
+    let md = `# ${this.canvas.centralIdea || 'Polyphony Session'}\n\n`;
+    md += `*Last updated: ${new Date(this.canvas.lastUpdated).toLocaleString()}*\n\n`;
+    
+    for (const level1 of this.canvas.hierarchy || []) {
+      md += `## ${level1.title}\n\n`;
+      if (level1.content) {
+        md += `${level1.content}\n\n`;
+      }
+      
+      for (const level2 of level1.children || []) {
+        md += `### ${level2.title}\n\n`;
+        if (level2.content) {
+          md += `${level2.content}\n\n`;
+        }
+        
+        for (const level3 of level2.children || []) {
+          md += `#### ${level3.title}\n\n`;
+          if (level3.content) {
+            md += `${level3.content}\n\n`;
+          }
+        }
+      }
+    }
+    
+    return md;
+  }
+}
+
+/**
+ * LangGraph Agent Implementation
+ */
+export class LangGraphAgent {
+  constructor(redisClient, fileStorage, vectorDB, io) {
+    this.redisClient = redisClient;
+    this.fileStorage = fileStorage;
+    this.vectorDB = vectorDB;
+    this.io = io;
+    
+    // Room state management
+    this.roomStates = new Map(); // roomId -> { canvasState, adminUserId, settings }
+    
+    // Initialize model
+    const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('GOOGLE_AI_API_KEY or GEMINI_API_KEY required');
+    }
+
+    this.model = new ChatGoogleGenerativeAI({
+      model: MODEL_NAME,
+      apiKey,
+      temperature: 0.3, // Lower temperature for more consistent hierarchical organization
+      maxOutputTokens: 8192
+    });
+
+    // Initialize the graph
+    this.graph = this.buildGraph();
+    
+    console.log(`LangGraphAgent initialized with model: ${MODEL_NAME}`);
+  }
+
+  /**
+   * Build the LangGraph state graph
+   */
+  buildGraph() {
+    // Define the state annotation
+    const StateAnnotation = Annotation.Root({
+      messages: Annotation({
+        reducer: (x, y) => x.concat(y),
+        default: () => []
+      }),
+      roomId: Annotation({
+        default: () => ''
+      }),
+      userId: Annotation({
+        default: () => ''
+      }),
+      userName: Annotation({
+        default: () => ''
+      }),
+      socketId: Annotation({
+        default: () => ''
+      }),
+      iteration: Annotation({
+        default: () => 0
+      }),
+      canvasNeedsRefresh: Annotation({
+        default: () => false
+      }),
+      knowledgeEntries: Annotation({
+        default: () => []
+      }),
+      finalResponse: Annotation({
+        default: () => ''
+      })
+    });
+
+    // Create the graph
+    const workflow = new StateGraph(StateAnnotation);
+
+    // Add nodes
+    workflow.addNode('understand', this.understandNode.bind(this));
+    workflow.addNode('refresh_canvas', this.refreshCanvasNode.bind(this));
+    workflow.addNode('answer_question', this.answerQuestionNode.bind(this));
+
+    // Define edges
+    workflow.setEntryPoint('understand');
+    
+    // Conditional edges from understand
+    workflow.addConditionalEdges(
+      'understand',
+      (state) => {
+        if (state.canvasNeedsRefresh) return 'refresh_canvas';
+        return 'answer_question';
+      },
+      {
+        refresh_canvas: 'refresh_canvas',
+        answer_question: 'answer_question'
+      }
+    );
+    
+    workflow.addEdge('refresh_canvas', 'answer_question');
+    workflow.addEdge('answer_question', END);
+
+    return workflow.compile();
+  }
+
+  /**
+   * Understand Node: Analyze the user's message and current state
+   */
+  async understandNode(state) {
+    const { roomId } = state;
+    const messages = state.messages || [];
+    
+    if (!messages.length) {
+      console.warn('understandNode: No messages in state');
+      return {
+        ...state,
+        canvasNeedsRefresh: false,
+        knowledgeEntries: [],
+        iteration: state.iteration + 1
+      };
+    }
+    
+    // Get all knowledge entries for context
+    const allKnowledge = await this.vectorDB.getAllKnowledge(roomId);
+    
+    // Get current canvas
+    const roomState = this.roomStates.get(roomId);
+    const currentCanvas = roomState?.canvasState?.get() || { hierarchy: [] };
+    
+    // Build understanding prompt
+    const understandingPrompt = `You are analyzing the user's message to update the canvas model.
+
+Current Canvas:
+Central Idea: ${currentCanvas?.centralIdea || 'None yet'}
+Current Themes: ${currentCanvas?.hierarchy?.map(h => h.title).join(', ') || 'None'}
+
+Existing Knowledge (${allKnowledge.length} entries):
+${allKnowledge.slice(0, 10).map(k => `- ${k.topic}`).join('\n')}
+
+Your task:
+1. EXTRACT the actual topic/theme from the user's message
+2. Determine if canvas needs refresh
+
+CRITICAL - Trigger refresh (NEEDS_REFRESH: true) when:
+- Canvas is empty (no central idea yet)
+- First user message in the conversation
+- New file/document was just uploaded
+- User introduces a new major topic/theme
+- The current canvas doesn't capture what they're discussing
+
+Respond:
+ANALYSIS: <what the user is actually discussing>
+NEEDS_REFRESH: <true/false - be proactive, refresh when there's new content to model>
+EXTRACTED_THEME: <the actual subject>`;
+
+    const lastMessage = messages[messages.length - 1];
+    const messageContent = typeof lastMessage.content === 'string' 
+      ? lastMessage.content 
+      : lastMessage.content.toString();
+
+    const response = await this.model.invoke([
+      new SystemMessage(understandingPrompt),
+      new HumanMessage(messageContent)
+    ]);
+
+    const content = response.content.toString();
+    const needsRefresh = content.includes('NEEDS_REFRESH: true');
+    
+    return {
+      ...state,
+      canvasNeedsRefresh: needsRefresh,
+      knowledgeEntries: allKnowledge,
+      iteration: state.iteration + 1
+    };
+  }
+
+  /**
+   * Refresh Canvas Node: Re-ingest all data and redraw the canvas
+   */
+  async refreshCanvasNode(state) {
+    const { roomId } = state;
+    
+    console.log(`LangGraphAgent: refreshing canvas for room ${roomId}`);
+    
+    // Get ALL data from Redis
+    const allKnowledge = await this.vectorDB.getAllKnowledge(roomId);
+    const files = this.fileStorage.listRoomFiles(roomId);
+    const roomState = this.roomStates.get(roomId);
+    
+    // Build comprehensive refresh prompt
+    const refreshPrompt = `You are the Polyphony Synthesis Agent. Your job is to MODEL THE ACTUAL CONVERSATION happening in this space.
+
+ALL Knowledge Entries (${allKnowledge.length}):
+${allKnowledge.map(k => `
+TOPIC: ${k.topic}
+CONTENT: ${k.content}
+TAGS: ${(k.tags || []).join(', ')}
+USER: ${k.userId}
+---`).join('\n')}
+
+Uploaded Files (${files.length}):
+${files.map(f => `- ${f.fileName} (${f.pageCount} pages)`).join('\n')}
+
+CRITICAL - EXTRACT ACTUAL THEMES FROM THE CONTENT:
+- If users talk about "meaning of life" → Central Idea: "The Meaning of Life"
+- If they discuss philosophy → Themes: "Philosophical Perspectives", "Existentialism", "Ethics"
+- If they mention happiness → Sub-theme: "Happiness vs Meaning"
+
+NEVER create meta-categories like:
+- "Hierarchical Structuring"
+- "Knowledge Organization" 
+- "Information Architecture"
+
+Your task - Create a CANVAS that MODELS THE ACTUAL DISCUSSION:
+
+1. Identify the CENTRAL IDEA from what users are actually discussing
+2. Extract REAL THEMES from their messages (not generic templates)
+3. Organize by IMPORTANCE to the central topic:
+   - Level 1: Major concepts/themes from the conversation (3-5 items)
+   - Level 2: Supporting ideas (2-4 per Level 1)
+   - Level 3: Specific details/examples
+4. PRUNE off-topic or outdated info
+5. SYNTHESIZE the actual content
+
+Respond in this JSON format:
+{
+  "centralIdea": "The actual topic users are discussing",
+  "hierarchy": [
+    {
+      "title": "Actual Theme from Conversation",
+      "content": "What this theme means in context",
+      "importance": 10,
+      "children": [
+        {
+          "title": "Related Sub-theme",
+          "content": "Explanation",
+          "importance": 7
+        }
+      ]
+    }
+  ]
+}
+
+Importance: 1-10 based on centrality to the actual discussion`;
+
+    const response = await this.model.invoke([
+      new SystemMessage(refreshPrompt),
+      new HumanMessage('Please refresh the canvas based on all available information.')
+    ]);
+
+    // Parse the JSON response
+    let canvasData;
+    try {
+      const content = response.content.toString();
+      // Extract JSON from potential markdown code blocks
+      const jsonMatch = content.match(/```json\s*([\s\S]*?)```/) || 
+                       content.match(/```\s*([\s\S]*?)```/) ||
+                       [null, content];
+      canvasData = JSON.parse(jsonMatch[1] || content);
+    } catch (e) {
+      console.error('Failed to parse canvas refresh response:', e);
+      // Fallback: create a simple structure
+      canvasData = {
+        centralIdea: 'Discussion Summary',
+        hierarchy: [{
+          title: 'Key Points',
+          content: response.content.toString().slice(0, 500),
+          importance: 5,
+          children: []
+        }]
+      };
+    }
+
+    // Update the canvas
+    if (roomState?.canvasState) {
+      await roomState.canvasState.update(canvasData);
+    }
+
+    return {
+      ...state,
+      canvasData
+    };
+  }
+
+  /**
+   * Answer Question Node: Generate response to user question
+   */
+  async answerQuestionNode(state) {
+    const { roomId, knowledgeEntries, canvasData } = state;
+    const messages = state.messages || [];
+    
+    // Get current canvas
+    const roomState = this.roomStates.get(roomId);
+    const currentCanvas = roomState?.canvasState?.get() || canvasData;
+    
+    // Get query from last message
+    const lastMessage = messages[messages.length - 1];
+    const query = lastMessage?.content 
+      ? (typeof lastMessage.content === 'string' ? lastMessage.content : lastMessage.content.toString())
+      : '';
+      
+    // Search for relevant knowledge
+    const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, query, 5);
+    
+    // Build answer prompt
+    const answerPrompt = `You are the Polyphony Agent - a synthesis agent that helps users explore complex topics.
+
+CURRENT CANVAS (Your evolving understanding of THIS conversation):
+Central Topic: ${currentCanvas?.centralIdea || 'Not yet established - waiting for user input'}
+
+Current Structure:
+${JSON.stringify(currentCanvas?.hierarchy || [], null, 2)}
+
+Relevant Knowledge from this session:
+${relevantKnowledge.map(k => `- ${k.topic}: ${k.content.slice(0, 300)}...`).join('\n')}
+
+AVAILABLE TOOLS:
+- contribute(type, title, content, importance, tags): Add insights to the collective understanding. This updates BOTH the canvas AND knowledge base automatically.
+- refresh_canvas(reason): Rebuild the entire canvas when topic shifts significantly.
+
+WHEN TO USE contribute:
+- When you have a clear insight or concept to share
+- When you identify a key theme from the user's message
+- When synthesizing information from multiple sources
+- When explaining an important concept
+
+EXAMPLES of good contribute calls:
+- contribute("concept", "Agentic Design Patterns", "Description of the pattern...", 9, ["agentic", "design-pattern"])
+- contribute("insight", "Tool Use is Critical", "Explanation of why tools matter...", 8, ["tools", "agentic"])
+- contribute("concept", "Existentialism's View on Meaning", "Existentialists believe...", 9, ["philosophy", "existentialism"])
+
+CRITICAL INSTRUCTIONS:
+1. The canvas represents YOUR UNDERSTANDING of what users are discussing - NOT a generic template
+2. If canvas is empty, start building it based on what the user just said
+3. Extract actual themes from their message (e.g., "philosophy", "meaning of life", "existentialism")
+4. NEVER talk about "hierarchical structuring" or "knowledge organization" as topics
+5. Instead, discuss the ACTUAL CONTENT: philosophy, life's meaning, etc.
+6. USE the contribute tool liberally - every significant insight should be captured
+7. Be conversational and engaging - ask follow-up questions to deepen understanding`;
+
+    // Convert messages to proper format
+    const messageHistory = messages.slice(-5).map(m => {
+      const content = typeof m.content === 'string' ? m.content : m.content.toString();
+      return m instanceof HumanMessage ? new HumanMessage(content) : new AIMessage(content);
+    });
+
+    const response = await this.model.invoke([
+      new SystemMessage(answerPrompt),
+      ...messageHistory
+    ]);
+
+    const finalResponse = response.content.toString();
+
+    return {
+      ...state,
+      finalResponse
+    };
+  }
+
+  /**
+   * Register a room
+   */
+  registerRoom(roomId, adminUserId, metadata = {}) {
+    const canvasState = new CanvasState(roomId, this.io);
+    
+    this.roomStates.set(roomId, {
+      ...metadata,
+      adminUserId,
+      createdAt: Date.now(),
+      settings: {
+        groupChatEnabled: false
+      },
+      canvasState
+    });
+
+    console.log(`LangGraphAgent: room registered ${roomId}, admin: ${adminUserId}`);
+  }
+
+  /**
+   * Unregister a room
+   */
+  unregisterRoom(roomId) {
+    this.roomStates.delete(roomId);
+    console.log(`LangGraphAgent: room unregistered ${roomId}`);
+  }
+
+  /**
+   * Get room state
+   */
+  getRoomState(roomId) {
+    const state = this.roomStates.get(roomId);
+    if (!state) return null;
+    
+    return {
+      settings: state.settings,
+      canvas: state.canvasState?.get() || []
+    };
+  }
+
+  /**
+   * Check if user is admin
+   */
+  isAdmin(roomId, userId) {
+    const room = this.roomStates.get(roomId);
+    return room && room.adminUserId === userId;
+  }
+
+  /**
+   * Set group chat
+   */
+  setGroupChat(roomId, userId, enabled) {
+    const room = this.roomStates.get(roomId);
+    if (!room) return { error: 'Room not found' };
+    if (room.adminUserId !== userId) return { error: 'Only admin can change settings' };
+
+    room.settings.groupChatEnabled = enabled;
+    console.log(`LangGraphAgent: room ${roomId} groupChat=${enabled}`);
+    return { success: true, groupChatEnabled: enabled };
+  }
+
+  /**
+   * Handle incoming message
+   */
+  async handleMessage(roomId, userId, userName, socketId, content, conversationHistory = []) {
+    try {
+      // Create knowledge entry from user's message
+      await this.vectorDB.createKnowledgeEntry(
+        roomId,
+        userId,
+        `User: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`,
+        content,
+        ['user-input'],
+        []
+      );
+
+      // Build message history
+      const messages = [
+        ...conversationHistory.map(msg => 
+          msg.role === 'user' 
+            ? new HumanMessage(msg.content)
+            : new AIMessage(msg.content)
+        ),
+        new HumanMessage(content)
+      ];
+
+      // Run the graph
+      const result = await this.graph.invoke({
+        messages,
+        roomId,
+        userId,
+        userName,
+        socketId,
+        iteration: 0,
+        canvasNeedsRefresh: false,
+        knowledgeEntries: []
+      });
+
+      // Get updated canvas for UI
+      const roomState = this.roomStates.get(roomId);
+      const knowledgeUpdate = this.buildKnowledgeTreeFromCanvas(
+        roomState?.canvasState?.get()
+      );
+
+      return {
+        content: result.finalResponse || 'I processed your message.',
+        knowledgeUpdate
+      };
+    } catch (error) {
+      console.error('LangGraphAgent error:', error);
+      return {
+        content: `I encountered an error: ${error.message}`,
+        knowledgeUpdate: null
+      };
+    }
+  }
+
+  /**
+   * Build knowledge tree from canvas for UI
+   */
+  buildKnowledgeTreeFromCanvas(canvas) {
+    if (!canvas || !canvas.hierarchy) {
+      return { topics: [] };
+    }
+
+    const topics = canvas.hierarchy.map(level1 => ({
+      title: level1.title,
+      badge: `${level1.importance || 5}/10`,
+      content: level1.content,
+      children: (level1.children || []).map(level2 => ({
+        title: level2.title,
+        content: level2.content,
+        badge: `${level2.importance || 5}/10`,
+        children: (level2.children || []).map(level3 => ({
+          title: level3.title,
+          content: level3.content,
+          badge: `${level3.importance || 5}/10`
+        }))
+      }))
+    }));
+
+    return { topics };
+  }
+
+  /**
+   * Handle file upload with semantic chunking
+   */
+  async handleFileUpload(roomId, userId, socketId, fileName, fileType, content) {
+    try {
+      // Save file
+      const fileInfo = await this.fileStorage.saveFile(roomId, fileName, fileType, content);
+      
+      // Get chunks
+      const chunks = this.fileStorage.getAllChunks(roomId).filter(c => c.fileId === fileInfo.fileId);
+      
+      // Sample chunks for LLM analysis
+      const sampleChunks = chunks.slice(0, Math.min(5, chunks.length));
+      const sampleContent = sampleChunks.map(c => c.content).join('\n\n---\n\n');
+      
+      // Use LLM to extract semantic topics
+      const topicExtractionPrompt = `Extract key topics/concepts from this document excerpt:
+
+DOCUMENT: ${fileName}
+
+CONTENT:
+${sampleContent.slice(0, 3000)}
+
+Extract 3-7 main topics/concepts. For each:
+1. Give it a clear, descriptive title (NOT "Part 1" - actual topic name)
+2. Write a brief summary of what this section covers
+
+Respond as JSON:
+[
+  {"title": "Actual Topic Name", "summary": "Brief description of content"},
+  ...
+]`;
+
+      let extractedTopics = [];
+      try {
+        const topicResponse = await this.model.invoke([
+          new SystemMessage(topicExtractionPrompt)
+        ]);
+        
+        const topicContent = topicResponse.content.toString();
+        const jsonMatch = topicContent.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          extractedTopics = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        console.warn('Topic extraction failed, using fallback:', e.message);
+      }
+
+      // Create knowledge entries with semantic topics
+      const entriesToCreate = extractedTopics.length > 0 
+        ? extractedTopics.slice(0, Math.min(7, extractedTopics.length))
+        : chunks.slice(0, 5).map((c, i) => ({
+            title: `${fileName} - Section ${i + 1}`,
+            summary: c.content.slice(0, 200)
+          }));
+
+      for (let i = 0; i < entriesToCreate.length; i++) {
+        const topic = entriesToCreate[i];
+        const chunkContent = chunks[i]?.content || topic.summary;
+        
+        await this.vectorDB.createKnowledgeEntry(
+          roomId,
+          userId,
+          topic.title,
+          chunkContent,
+          ['file-upload', fileType.slice(1), 'extracted-topic'],
+          [],
+          { sourceMetadata: { fileName, topic: topic.title } }
+        );
+      }
+
+      // Trigger canvas refresh
+      const roomState = this.roomStates.get(roomId);
+      if (roomState?.canvasState) {
+        this.queueCanvasRefresh(roomId);
+      }
+
+      const topicList = extractedTopics.map(t => t.title).join(', ');
+      
+      return {
+        fileInfo: {
+          ...fileInfo,
+          extractedTopics: extractedTopics.map(t => t.title)
+        },
+        agentSummary: `File "${fileName}" processed. I extracted these topics: ${topicList || 'key sections'}. The canvas will update shortly.`,
+        knowledgeUpdate: this.buildKnowledgeTreeFromCanvas(roomState?.canvasState?.get())
+      };
+    } catch (error) {
+      console.error('LangGraphAgent: error in handleFileUpload:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Queue a canvas refresh
+   */
+  async queueCanvasRefresh(roomId) {
+    // Debounce refreshes
+    const roomState = this.roomStates.get(roomId);
+    if (!roomState) return;
+
+    if (roomState.refreshTimeout) {
+      clearTimeout(roomState.refreshTimeout);
+    }
+
+    roomState.refreshTimeout = setTimeout(async () => {
+      try {
+        await this.graph.invoke({
+          messages: [new HumanMessage('Please refresh the canvas')],
+          roomId,
+          userId: 'system',
+          userName: 'System',
+          socketId: null,
+          iteration: 0,
+          canvasNeedsRefresh: true,
+          knowledgeEntries: []
+        });
+      } catch (error) {
+        console.error('Canvas refresh error:', error);
+      }
+    }, 2000); // Wait 2 seconds after last activity
+  }
+
+  /**
+   * Generate export
+   */
+  async generateExport(roomId) {
+    const roomState = this.roomStates.get(roomId);
+    if (!roomState?.canvasState) {
+      return '# No canvas data available';
+    }
+
+    return roomState.canvasState.exportToMarkdown();
+  }
+
+  /**
+   * Handle topic expansion (when user clicks on canvas item)
+   */
+  async handleTopicExpansion(roomId, userId, userName, socketId, topicPath, topicTitle, topicContent) {
+    try {
+      console.log(`LangGraphAgent: expanding topic "${topicTitle}" for room ${roomId}`);
+
+      // Get current canvas for context
+      const roomState = this.roomStates.get(roomId);
+      const currentCanvas = roomState?.canvasState?.get();
+
+      // Get relevant knowledge about this topic
+      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 5);
+
+      // Build expansion prompt
+      const expansionPrompt = `You are expanding on a specific topic from the canvas.
+
+CANVAS CONTEXT:
+Central Idea: ${currentCanvas?.centralIdea || 'Not established'}
+
+Topic to Expand: "${topicTitle}"
+Current Content: ${topicContent || 'No content yet'}
+Topic Path: ${topicPath.join(' > ')}
+
+Relevant Knowledge:
+${relevantKnowledge.map(k => `- ${k.topic}: ${k.content.slice(0, 300)}...`).join('\n')}
+
+Your task:
+1. Provide a detailed exploration of "${topicTitle}"
+2. Identify 3-5 sub-topics or key aspects
+3. Explain relationships, implications, and nuance
+4. Be conversational but informative
+
+Respond with:
+1. A rich explanation of the topic
+2. Suggested sub-topics that could be added to the canvas`;
+
+      const response = await this.model.invoke([
+        new SystemMessage(expansionPrompt),
+        new HumanMessage(`Please expand on "${topicTitle}".`)
+      ]);
+
+      const expansionContent = response.content.toString();
+
+      // Generate sub-topics structure
+      const subTopicsMatch = expansionContent.match(/Sub-topics?:?\s*([\s\S]*?)(?:\n\n|$)/i);
+      const subTopics = subTopicsMatch 
+        ? subTopicsMatch[1].split(/\n- |\n\d+\. /).filter(s => s.trim())
+        : [];
+
+      // Build expansion object
+      const expansion = {
+        title: topicTitle,
+        expandedContent: expansionContent,
+        subTopics: subTopics.slice(0, 5).map((st, i) => ({
+          title: st.trim().replace(/^[\d\-\*]\.?\s*/, ''),
+          content: '',
+          importance: 5
+        }))
+      };
+
+      // Update the canvas with expansion
+      if (roomState?.canvasState) {
+        await this.addExpansionToCanvas(roomId, topicPath, expansion);
+      }
+
+      return {
+        content: expansionContent,
+        expansion
+      };
+    } catch (error) {
+      console.error('LangGraphAgent: error in handleTopicExpansion:', error);
+      return {
+        content: `I encountered an error expanding this topic: ${error.message}`,
+        expansion: null
+      };
+    }
+  }
+
+  /**
+   * Add expansion to canvas
+   */
+  async addExpansionToCanvas(roomId, topicPath, expansion) {
+    const roomState = this.roomStates.get(roomId);
+    if (!roomState?.canvasState) return;
+
+    const canvas = roomState.canvasState.get();
+    
+    // Navigate to the topic and add children
+    let current = canvas.hierarchy;
+    let target = null;
+
+    // Find the target node
+    for (let i = 0; i < topicPath.length; i++) {
+      const index = topicPath[i];
+      if (i === topicPath.length - 1) {
+        target = current[index];
+      } else {
+        current = current[index]?.children || [];
+      }
+    }
+
+    if (target) {
+      // Add expanded content and sub-topics
+      target.expandedContent = expansion.expandedContent;
+      if (!target.children) target.children = [];
+      
+      // Add new sub-topics
+      for (const subTopic of expansion.subTopics) {
+        if (!target.children.find(c => c.title === subTopic.title)) {
+          target.children.push(subTopic);
+        }
+      }
+
+      // Update canvas
+      await roomState.canvasState.update({
+        centralIdea: canvas.centralIdea,
+        hierarchy: canvas.hierarchy
+      });
+    }
+  }
+
+  /**
+   * Room cleanup
+   */
+  async handleRoomCleanup(roomId) {
+    console.log(`LangGraphAgent: cleaning up room ${roomId}`);
+    await this.fileStorage.cleanupRoom(roomId);
+    await this.vectorDB.cleanupRoom(roomId);
+    await this.redisClient.cleanupRoom(roomId);
+    console.log(`LangGraphAgent: room ${roomId} cleaned up`);
+  }
+}

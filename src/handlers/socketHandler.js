@@ -52,6 +52,11 @@ export class SocketHandler {
         await this.handleVectorCloudRequest(socket, data);
       });
 
+      // Canvas topic expand request
+      socket.on('canvas:expand_topic', async (data) => {
+        await this.handleCanvasExpandTopic(socket, data);
+      });
+
       // Disconnect
       socket.on('disconnect', async () => {
         await this.handleDisconnect(socket);
@@ -482,6 +487,62 @@ export class SocketHandler {
     } catch (error) {
       console.error('Error fetching vector cloud data:', error);
       socket.emit('error', { code: 'VECTOR_CLOUD_ERROR', message: 'Failed to fetch vector data' });
+    }
+  }
+
+  async handleCanvasExpandTopic(socket, data) {
+    const session = this.userSessions.get(socket.id);
+    if (!session) {
+      socket.emit('error', { code: 'NOT_IN_ROOM', message: 'Must join a room first' });
+      return;
+    }
+
+    const { roomId, userId, userName } = session;
+    const { topicPath, topicTitle, topicContent } = data;
+
+    try {
+      console.log(`Canvas expand requested by ${userName}: ${topicTitle}`);
+
+      // Treat this as a question about the topic
+      const question = `Tell me more about "${topicTitle}". What are the key details, implications, and related concepts?`;
+
+      // Get agent response
+      socket.emit('agent:typing');
+      
+      const agentResponse = await this.agent.handleTopicExpansion(
+        roomId,
+        userId,
+        userName,
+        socket.id,
+        topicPath,
+        topicTitle,
+        topicContent
+      );
+
+      socket.emit('agent:done');
+
+      // Send response to user
+      socket.emit('agent:response', {
+        content: agentResponse.content,
+        timestamp: Date.now()
+      });
+
+      // If expansion created new canvas content, update everyone
+      if (agentResponse.expansion) {
+        this.io.to(roomId).emit('canvas:topic_expanded', {
+          topicPath,
+          expansion: agentResponse.expansion,
+          expandedBy: userName
+        });
+      }
+
+    } catch (error) {
+      console.error('Error expanding canvas topic:', error);
+      socket.emit('agent:done');
+      socket.emit('error', {
+        code: 'EXPAND_ERROR',
+        message: error.message
+      });
     }
   }
 }

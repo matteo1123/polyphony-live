@@ -249,13 +249,33 @@ SYNTHESIS_INTERVAL_MS=3000
 THOUGHT_TTL_SECONDS=3600
 ```
 
+## 🎙️ Voice Chat
+
+Polyphony now supports voice interaction! Click the "Voice" button to enable:
+
+- **Speech-to-Text**: Uses Web Speech API (built into Chrome, Edge, Safari)
+- **Text-to-Speech**: Agent responses are spoken aloud
+  - **Web Speech API**: Fast, works offline, quality varies by browser
+  - **KittenTTS** (optional): High-quality neural voice (~25MB download on first use)
+
+### Usage
+1. Click the **Voice** button in the chat input area
+2. Grant microphone permission when prompted
+3. Speak naturally - your words appear in the chat
+4. The agent will respond both in text and voice
+
+### Browser Support
+- ✅ Chrome/Edge: Full support (best quality)
+- ✅ Safari: Full support
+- ⚠️ Firefox: Limited support (no Web Speech API)
+
 ## 🛣️ Roadmap
 
 - [ ] Redis Vector Search integration with RedisVL
 - [ ] LangGraph for Hive Agent orchestration
 - [ ] OpenAI/Cohere embedding generation
 - [ ] React frontend with real-time UI
-- [ ] Audio/speech-to-text support
+- [x] Audio/speech-to-text support
 - [ ] Conflict detection & resolution
 - [ ] Advanced insight generation
 - [ ] Markdown export functionality

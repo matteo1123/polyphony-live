@@ -584,6 +584,8 @@ footer {
   border-radius: 8px;
   max-width: 85%;
   font-size: 0.9rem;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .message.user {
@@ -612,6 +614,7 @@ footer {
   font-size: 0.75rem;
   color: var(--text-secondary);
   margin-bottom: 0.2rem;
+  word-wrap: break-word;
 }
 
 .message.user .sender {
@@ -620,17 +623,24 @@ footer {
 
 .message .content {
   word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .chat-input-area {
   padding: 0.75rem;
   border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 60px;
 }
 
 .input-row {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
+  width: 100%;
 }
 
 .chat-input {
@@ -644,6 +654,7 @@ footer {
   resize: none;
   min-height: 38px;
   max-height: 100px;
+  min-width: 0; /* Allow flex shrinking */
 }
 
 .chat-input:focus {
@@ -1017,6 +1028,266 @@ footer {
   }
 }
 
+/* Hierarchical Canvas Styles */
+.canvas-central-idea {
+  padding: 1rem 1.5rem;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: white;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.canvas-central-idea h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.canvas-version {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.canvas-hierarchy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.hierarchy-node {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.hierarchy-node.level-1 {
+  border-left: 4px solid var(--accent);
+}
+
+.hierarchy-node.level-2 {
+  border-left: 3px solid var(--success);
+  margin-left: 1rem;
+}
+
+.hierarchy-node.level-3 {
+  border-left: 2px solid var(--warning);
+  margin-left: 1rem;
+}
+
+.hierarchy-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  gap: 0.5rem;
+}
+
+.hierarchy-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.hierarchy-header.high {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.hierarchy-header.medium {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.hierarchy-header.low {
+  background: transparent;
+}
+
+.hierarchy-header.expandable:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.hierarchy-header.loading {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.hierarchy-header.loading .hierarchy-toggle {
+  animation: spin 1s linear infinite;
+}
+
+.hierarchy-toggle {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.hierarchy-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  flex: 1;
+}
+
+.hierarchy-importance {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--bg-tertiary);
+  border-radius: 10px;
+  color: var(--text-secondary);
+}
+
+.hierarchy-content {
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  border-top: 1px solid var(--border);
+}
+
+.hierarchy-expanded-content {
+  padding: 1rem;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  line-height: 1.6;
+  background: rgba(99, 102, 241, 0.05);
+  border-left: 3px solid var(--accent);
+  margin: 0.5rem 1rem;
+  border-radius: 0 4px 4px 0;
+  white-space: pre-wrap;
+}
+
+.hierarchy-children {
+  padding: 0.5rem 0;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.hierarchy-children.hidden,
+.hierarchy-expanded-content.hidden {
+  display: none;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Voice Button Styles */
+.voice-btn {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0; /* Prevent button from shrinking */
+  white-space: nowrap;
+}
+
+.voice-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.voice-btn.listening {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--error);
+  color: var(--error);
+  animation: pulse-recording 1.5s infinite;
+}
+
+.voice-btn.speaking {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.voice-btn.enabled {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.voice-btn.loading {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+@keyframes pulse-recording {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+}
+
+.voice-icon {
+  flex-shrink: 0;
+}
+
+.voice-status {
+  white-space: nowrap;
+}
+
+.voice-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.voice-waves {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 16px;
+}
+
+.voice-waves span {
+  width: 3px;
+  background: currentColor;
+  border-radius: 2px;
+  animation: wave 0.5s ease-in-out infinite;
+}
+
+.voice-waves span:nth-child(1) { animation-delay: 0s; height: 8px; }
+.voice-waves span:nth-child(2) { animation-delay: 0.1s; height: 12px; }
+.voice-waves span:nth-child(3) { animation-delay: 0.2s; height: 8px; }
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
+}
+
+.voice-waves.hidden,
+.voice-indicator.hidden {
+  display: none;
+}
+
+/* Interim transcript indicator */
+.interim-transcript {
+  color: var(--text-secondary);
+  font-style: italic;
+  opacity: 0.7;
+}
+
 /* Mobile Layout */
 @media (max-width: 768px) {
   .knowledge-sidebar {
@@ -1033,6 +1304,14 @@ footer {
   }
   
   .view-tabs {
+    display: none;
+  }
+  
+  .voice-btn {
+    padding: 0.5rem;
+  }
+  
+  .voice-status {
     display: none;
   }
 }

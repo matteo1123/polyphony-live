@@ -103,26 +103,49 @@ export const tools = [
     }
   },
   {
-    name: 'add_to_canvas',
-    description: 'Add a contribution to the shared canvas visible to ALL users. Use this to share insights, ideas, questions, or synthesized thoughts. In mediation mode, rephrase user contributions diplomatically before adding.',
+    name: 'contribute',
+    description: 'Add a contribution to the shared understanding. This SINGLE tool updates: (1) the canvas (visible to all), (2) the knowledge base (searchable), and (3) the knowledge sidebar. Use this whenever you have insights, synthesized information, or key concepts to share. This is the PRIMARY way to build collective knowledge.',
     parameters: {
       type: 'object',
       properties: {
         type: {
           type: 'string',
-          enum: ['insight', 'question', 'idea', 'synthesis', 'response', 'summary', 'file_summary'],
+          enum: ['insight', 'question', 'idea', 'synthesis', 'response', 'summary', 'concept', 'fact'],
           description: 'The type of contribution'
+        },
+        title: {
+          type: 'string',
+          description: 'A clear, specific title for this contribution (e.g., "Agentic Design Patterns", "The Meaning of Life in Existentialism", NOT generic like "Insight" or "Document Part 1")'
         },
         content: {
           type: 'string',
-          description: 'The content to share. If mediating, rephrase diplomatically - never share raw user messages.'
+          description: 'The detailed content/explanation'
         },
-        relatedTo: {
-          type: 'string',
-          description: 'Optional: ID of a canvas item this relates to (for threading)'
+        importance: {
+          type: 'integer',
+          description: 'Importance 1-10 (10 = central to current discussion, 1 = minor detail)'
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Relevant tags for searchability (e.g., ["agentic", "design-pattern", "llm"])'
         }
       },
-      required: ['type', 'content']
+      required: ['type', 'title', 'content']
+    }
+  },
+  {
+    name: 'refresh_canvas',
+    description: 'Trigger a full canvas refresh. This re-ingests ALL knowledge from Redis and redraws the canvas as a hierarchical representation of understanding. Use this when: (1) topic has shifted significantly, (2) new files have been uploaded, (3) you want to reorganize by importance. The canvas should always reflect the CURRENT understanding, pruning outdated info.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Why the refresh is being triggered'
+        }
+      },
+      required: ['reason']
     }
   }
 ];
@@ -142,5 +165,6 @@ export const TOOLS = {
   CREATE_KNOWLEDGE_ENTRY: 'create_knowledge_entry',
   SEARCH_KNOWLEDGE: 'search_knowledge',
   RENDER_VISUALIZATION: 'render_visualization',
-  ADD_TO_CANVAS: 'add_to_canvas'
+  CONTRIBUTE: 'contribute',
+  REFRESH_CANVAS: 'refresh_canvas'
 };

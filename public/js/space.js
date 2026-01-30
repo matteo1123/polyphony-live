@@ -1,3 +1,5 @@
+import { VoiceChat } from './voiceChat.js';
+
 document.addEventListener('DOMContentLoaded', () => {
   // Extract space ID from URL
   const pathParts = window.location.pathname.split('/');
@@ -37,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const uploadBtn = document.getElementById('uploadBtn');
   const fileInput = document.getElementById('fileInput');
   const exportBtn = document.getElementById('exportBtn');
+  const voiceBtn = document.getElementById('voiceBtn');
 
   // Visualization renderer
   const vizRenderer = new VisualizationRenderer('sharedCanvas');
@@ -47,6 +50,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Socket connection
   let socket = null;
+  
+  // Voice chat
+  let voiceChat = null;
+  let voiceEnabled = false;
+  let agentVoiceEnabled = true; // Auto-speak agent responses
+  let interimTranscriptElement = null;
 
   // Show name modal if no name stored
   if (!userName) {
@@ -151,6 +160,11 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('agent:response', (data) => {
       addMessage('Agent', data.content, 'agent');
       conversationHistory.push({ role: 'assistant', content: data.content });
+      
+      // Speak agent response if voice is enabled
+      if (voiceEnabled && agentVoiceEnabled && voiceChat) {
+        voiceChat.speak(data.content);
+      }
     });
 
     socket.on('agent:typing', showTypingIndicator);
@@ -159,6 +173,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Canvas updates (public)
     socket.on('canvas:update', (data) => {
       addCanvasItem(data.contribution);
+    });
+
+    // Full canvas update (hierarchical)
+    socket.on('canvas:full_update', (data) => {
+      currentCanvasData = data.canvas;
+      renderHierarchicalCanvas(data.canvas);
+    });
+    
+    // Topic expansion update
+    socket.on('canvas:topic_expanded', (data) => {
+      addSystemMessage(`Topic "${data.topicPath[data.topicPath.length - 1]}" expanded by ${data.expandedBy}`);
+      // Canvas will auto-update on next full_update
     });
 
     // Knowledge tree updates
@@ -300,6 +326,174 @@ document.addEventListener('DOMContentLoaded', () => {
     addSystemMessage('Generating export...');
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VOICE CHAT
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  function initVoiceChat() {
+    voiceChat = new VoiceChat({
+      onTranscript: (text) => {
+        // Final transcript - send as message
+        removeInterimTranscript();
+        sendVoiceMessage(text);
+      },
+      onInterimTranscript: (text) => {
+        // Show interim transcript in UI
+        showInterimTranscript(text);
+      },
+      onStart: () => {
+        updateVoiceUI('listening');
+      },
+      onEnd: () => {
+        if (voiceEnabled) {
+          updateVoiceUI('enabled');
+        } else {
+          updateVoiceUI('disabled');
+        }
+      },
+      onError: (error) => {
+        console.error('Voice chat error:', error);
+        if (error.type === 'STT_UNSUPPORTED') {
+          addSystemMessage('Voice chat not supported in your browser', 'error');
+          voiceEnabled = false;
+          updateVoiceUI('disabled');
+        }
+      },
+      onTTSStart: () => {
+        updateVoiceUI('speaking');
+      },
+      onTTSEnd: () => {
+        updateVoiceUI(voiceEnabled ? 'enabled' : 'disabled');
+      },
+      onModelLoad: (status) => {
+        if (status.status === 'loaded') {
+          addSystemMessage('High-quality voice model loaded');
+        } else if (status.status === 'fallback') {
+          console.log('Using Web Speech API for TTS');
+        }
+      }
+    });
+    
+    // Check if voice is supported
+    if (!voiceChat.isSupported()) {
+      voiceBtn.style.display = 'none';
+      console.log('Voice chat not supported in this browser');
+    }
+  }
+  
+  function sendVoiceMessage(text) {
+    if (!text.trim() || !socket) return;
+    
+    const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    pendingMessage = { messageId, content: text };
+    conversationHistory.push({ role: 'user', content: text });
+    
+    addMessage('You', text, 'user', true);
+    
+    socket.emit('message:send', {
+      content: text,
+      messageId,
+      conversationHistory
+    });
+    
+    // Pause listening while waiting for response
+    if (voiceChat) {
+      voiceChat.stopListening();
+    }
+  }
+  
+  function showInterimTranscript(text) {
+    if (!interimTranscriptElement) {
+      interimTranscriptElement = document.createElement('div');
+      interimTranscriptElement.className = 'message user own interim-transcript';
+      interimTranscriptElement.innerHTML = `
+        <div class="sender">You (speaking...)</div>
+        <div class="content"></div>
+      `;
+      chatMessages.appendChild(interimTranscriptElement);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+    
+    interimTranscriptElement.querySelector('.content').textContent = text;
+  }
+  
+  function removeInterimTranscript() {
+    if (interimTranscriptElement) {
+      interimTranscriptElement.remove();
+      interimTranscriptElement = null;
+    }
+  }
+  
+  function updateVoiceUI(state) {
+    voiceBtn.classList.remove('listening', 'speaking', 'enabled', 'loading');
+    const indicator = voiceBtn.querySelector('.voice-indicator');
+    const waves = voiceBtn.querySelector('.voice-waves');
+    const status = voiceBtn.querySelector('.voice-status');
+    
+    indicator.classList.add('hidden');
+    waves.classList.add('hidden');
+    
+    switch (state) {
+      case 'listening':
+        voiceBtn.classList.add('listening');
+        waves.classList.remove('hidden');
+        status.textContent = 'Listening';
+        break;
+      case 'speaking':
+        voiceBtn.classList.add('speaking');
+        status.textContent = 'Speaking';
+        break;
+      case 'loading':
+        voiceBtn.classList.add('loading');
+        status.textContent = 'Loading...';
+        break;
+      case 'enabled':
+        voiceBtn.classList.add('enabled');
+        indicator.classList.remove('hidden');
+        status.textContent = 'Voice On';
+        break;
+      default:
+        status.textContent = 'Voice';
+    }
+  }
+  
+  async function toggleVoiceChat() {
+    if (!voiceChat) {
+      initVoiceChat();
+    }
+    
+    if (!voiceChat.isSupported()) {
+      addSystemMessage('Voice chat is not supported in your browser. Please use Chrome, Edge, or Safari.', 'error');
+      return;
+    }
+    
+    if (voiceEnabled) {
+      // Disable voice
+      voiceEnabled = false;
+      voiceChat.disableVoiceMode();
+      updateVoiceUI('disabled');
+      addSystemMessage('Voice chat disabled');
+    } else {
+      // Enable voice
+      updateVoiceUI('loading');
+      voiceEnabled = true;
+      await voiceChat.enableVoiceMode();
+      updateVoiceUI('enabled');
+      addSystemMessage('Voice chat enabled. Speak naturally, I\'ll respond!');
+      
+      // Load KittenTTS in background for better quality
+      if (voiceChat && !voiceChat.isModelLoaded && !voiceChat.isModelLoading) {
+        voiceChat.loadKittenTTS().then(success => {
+          if (success) {
+            console.log('KittenTTS loaded - high quality voice enabled');
+          }
+        });
+      }
+    }
+  }
+  
+  voiceBtn.addEventListener('click', toggleVoiceChat);
+
   toggleSidebar.addEventListener('click', () => {
     knowledgeSidebar.classList.toggle('collapsed');
     const icon = toggleSidebar.querySelector('.toggle-icon');
@@ -336,6 +530,136 @@ document.addEventListener('DOMContentLoaded', () => {
 
     sharedCanvas.appendChild(div);
     if (scroll) sharedCanvas.scrollTop = sharedCanvas.scrollHeight;
+  }
+
+  // Render hierarchical canvas (LangGraph agent's understanding)
+  function renderHierarchicalCanvas(canvas) {
+    if (!canvas) return;
+    
+    // Clear canvas
+    sharedCanvas.innerHTML = '';
+    
+    // Add central idea header
+    if (canvas.centralIdea) {
+      const headerDiv = document.createElement('div');
+      headerDiv.className = 'canvas-central-idea';
+      headerDiv.innerHTML = `
+        <h2>${escapeHtml(canvas.centralIdea)}</h2>
+        <span class="canvas-version">v${canvas.version}</span>
+      `;
+      sharedCanvas.appendChild(headerDiv);
+    }
+    
+    // Store canvas data for path tracking
+    currentCanvasData = canvas;
+    
+    // Render hierarchy
+    if (canvas.hierarchy && canvas.hierarchy.length > 0) {
+      const hierarchyDiv = document.createElement('div');
+      hierarchyDiv.className = 'canvas-hierarchy';
+      hierarchyDiv.id = 'hierarchyRoot';
+      
+      for (let i = 0; i < canvas.hierarchy.length; i++) {
+        hierarchyDiv.appendChild(createHierarchyNode(canvas.hierarchy[i], 1, [i]));
+      }
+      
+      sharedCanvas.appendChild(hierarchyDiv);
+    } else {
+      // Show placeholder if no hierarchy
+      sharedCanvas.innerHTML += `
+        <div class="canvas-placeholder">
+          <p>Agent's Understanding</p>
+          <p class="hint">The canvas will update as the agent synthesizes information</p>
+        </div>
+      `;
+    }
+    
+    sharedCanvas.scrollTop = 0;
+  }
+  
+  // Track current canvas for path tracking
+  let currentCanvasData = null;
+  
+  function createHierarchyNode(node, level, path = []) {
+    const div = document.createElement('div');
+    div.className = `hierarchy-node level-${level}`;
+    div.dataset.path = JSON.stringify(path);
+    
+    const importance = node.importance || 5;
+    const importanceClass = importance >= 8 ? 'high' : importance >= 5 ? 'medium' : 'low';
+    const hasChildren = node.children && node.children.length > 0;
+    const isExpanded = node.expandedContent || hasChildren;
+    
+    div.innerHTML = `
+      <div class="hierarchy-header ${importanceClass} ${isExpanded ? 'expanded' : 'expandable'}" data-expandable="true">
+        <span class="hierarchy-toggle">${isExpanded ? '▼' : '▶'}</span>
+        <span class="hierarchy-title">${escapeHtml(node.title)}</span>
+        <span class="hierarchy-importance" title="Importance: ${importance}/10">${importance}</span>
+      </div>
+      ${node.content ? `<div class="hierarchy-content">${escapeHtml(node.content)}</div>` : ''}
+      ${node.expandedContent ? `<div class="hierarchy-expanded-content">${escapeHtml(node.expandedContent)}</div>` : ''}
+    `;
+    
+    // Add click handler for expansion
+    const header = div.querySelector('.hierarchy-header');
+    header.addEventListener('click', () => {
+      // If already has expanded content, just toggle visibility
+      const expandedContent = div.querySelector('.hierarchy-expanded-content');
+      const childrenDiv = div.querySelector('.hierarchy-children');
+      
+      if (expandedContent || childrenDiv) {
+        // Toggle existing content
+        if (expandedContent) {
+          expandedContent.classList.toggle('hidden');
+        }
+        if (childrenDiv) {
+          childrenDiv.classList.toggle('hidden');
+        }
+        
+        // Update toggle icon
+        const toggle = header.querySelector('.hierarchy-toggle');
+        toggle.textContent = toggle.textContent === '▼' ? '▶' : '▼';
+        header.classList.toggle('expanded');
+        header.classList.toggle('collapsed');
+      } else {
+        // Request expansion from agent
+        requestTopicExpansion(node, path, div, header);
+      }
+    });
+    
+    // Add children
+    if (hasChildren) {
+      const childrenDiv = document.createElement('div');
+      childrenDiv.className = 'hierarchy-children';
+      
+      for (let i = 0; i < node.children.length; i++) {
+        const childPath = [...path, i];
+        childrenDiv.appendChild(createHierarchyNode(node.children[i], level + 1, childPath));
+      }
+      
+      div.appendChild(childrenDiv);
+    }
+    
+    return div;
+  }
+  
+  function requestTopicExpansion(node, path, nodeDiv, header) {
+    if (!socket) return;
+    
+    // Show loading state
+    header.classList.add('loading');
+    const toggle = header.querySelector('.hierarchy-toggle');
+    toggle.textContent = '◌';
+    
+    // Add system message about expansion
+    addSystemMessage(`Exploring: "${node.title}"...`);
+    
+    // Emit expansion request
+    socket.emit('canvas:expand_topic', {
+      topicPath: path,
+      topicTitle: node.title,
+      topicContent: node.content || ''
+    });
   }
 
   // UI helpers
@@ -854,4 +1178,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   };
+  // Cleanup voice chat on page unload
+  window.addEventListener('beforeunload', () => {
+    if (voiceChat) {
+      voiceChat.destroy();
+    }
+  });
 });

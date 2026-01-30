@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { RedisClient } from './services/redisClient.js';
 import { FileStorage } from './services/storage/fileStorage.js';
 import { VectorDB } from './services/storage/vectorDB.js';
-import { PolyphonyAgent } from './services/agent/polyphonyAgent.js';
+import { LangGraphAgent } from './services/agent/langGraphAgent.js';
 import { SocketHandler } from './handlers/socketHandler.js';
 import dotenv from 'dotenv';
 
@@ -61,8 +61,8 @@ const redisClient = new RedisClient(
 const fileStorage = new FileStorage();
 const vectorDB = new VectorDB(redisClient);
 
-// Initialize Polyphony Agent
-const agent = new PolyphonyAgent(redisClient, fileStorage, vectorDB, io);
+// Initialize LangGraph Agent
+const agent = new LangGraphAgent(redisClient, fileStorage, vectorDB, io);
 
 // Setup Socket.io handlers
 const socketHandler = new SocketHandler(io, redisClient, agent);
@@ -76,7 +76,7 @@ server.listen(PORT, async () => {
     await fileStorage.init();
     console.log(`Polyphony.live server running on port ${PORT}`);
     console.log(`Redis connected to ${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`);
-    console.log(`Polyphony Agent ready (tool-calling mode)`);
+    console.log(`LangGraph Agent ready (hierarchical canvas mode)`);
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
