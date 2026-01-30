@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/css/style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   </head>
   <body>
     <!-- Name prompt modal -->
@@ -172,5 +173,36 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="/js/visualizationRenderer.js"></script>
     <script type="module" src="/js/space.js"></script>
+    <script>
+      // Initialize Mermaid for rendering diagrams in the shared canvas
+      if (typeof mermaid !== 'undefined') {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: 'dark',
+          securityLevel: 'strict'
+        });
+      }
+
+      // Global function to render mermaid blocks in a given container
+      window.renderMermaidBlocks = function(container) {
+        if (typeof mermaid === 'undefined') return;
+        
+        const mermaidBlocks = container.querySelectorAll('.mermaid:not([data-processed="true"])');
+        mermaidBlocks.forEach(function(block) {
+          try {
+            mermaid.run({
+              nodes: [block],
+              suppressErrors: true
+            }).then(function() {
+              block.setAttribute('data-processed', 'true');
+            }).catch(function(err) {
+              console.error('Mermaid render error:', err);
+            });
+          } catch (e) {
+            console.error('Mermaid error:', e);
+          }
+        });
+      };
+    </script>
   </body>
 </html>

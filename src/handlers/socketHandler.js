@@ -58,6 +58,11 @@ export class SocketHandler {
         await this.handleCanvasExpandTopic(socket, data);
       });
 
+      // Canvas diagram generation request
+      socket.on('canvas:generate_diagram', async (data) => {
+        await this.handleCanvasGenerateDiagram(socket, data);
+      });
+
       // Disconnect
       socket.on('disconnect', async () => {
         await this.handleDisconnect(socket);
@@ -582,6 +587,63 @@ export class SocketHandler {
       socket.emit('agent:done');
       socket.emit('error', {
         code: 'EXPAND_ERROR',
+        message: error.message
+      });
+    }
+  }
+
+  async handleCanvasGenerateDiagram(socket, data) {
+    const session = this.userSessions.get(socket.id);
+    if (!session) {
+      socket.emit('error', { code: 'NOT_IN_ROOM', message: 'Must join a room first' });
+      return;
+    }
+
+    const { roomId, userId, userName } = session;
+    const { topicPath, topicTitle, topicContent } = data;
+
+    try {
+      console.log(`Canvas diagram requested by ${userName} for: ${topicTitle}`);
+
+      // Get agent to generate diagram
+      socket.emit('agent:typing');
+      
+      const agentResponse = await this.agent.handleDiagramGeneration(
+        roomId,
+        userId,
+        userName,
+        socket.id,
+        topicPath,
+        topicTitle,
+        topicContent
+      );
+
+      socket.emit('agent:done');
+
+      // Send response to user
+      if (agentResponse.content) {
+        socket.emit('agent:response', {
+          content: agentResponse.content,
+          timestamp: Date.now()
+        });
+      }
+
+      // If diagram was generated, broadcast to all users
+      if (agentResponse.diagram) {
+        this.io.to(roomId).emit('canvas:diagram_generated', {
+          topicPath,
+          diagram: agentResponse.diagram,
+          generatedBy: userName,
+          requestedBy: userId,
+          timestamp: Date.now()
+        });
+      }
+
+    } catch (error) {
+      console.error('Error generating diagram:', error);
+      socket.emit('agent:done');
+      socket.emit('error', {
+        code: 'DIAGRAM_ERROR',
         message: error.message
       });
     }

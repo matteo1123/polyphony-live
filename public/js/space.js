@@ -186,6 +186,75 @@ document.addEventListener('DOMContentLoaded', () => {
       addSystemMessage(`Topic "${data.topicPath[data.topicPath.length - 1]}" expanded by ${data.expandedBy}`);
       // Canvas will auto-update on next full_update
     });
+    
+    // Topic diagram generated
+    socket.on('canvas:diagram_generated', (data) => {
+      const { topicPath, diagram, requestedBy } = data;
+      
+      // Find the node in the current canvas
+      if (currentCanvasData && currentCanvasData.hierarchy) {
+        let current = currentCanvasData.hierarchy;
+        let targetNode = null;
+        
+        // Navigate to the target node
+        for (let i = 0; i < topicPath.length; i++) {
+          const index = topicPath[i];
+          if (i === topicPath.length - 1) {
+            targetNode = current[index];
+          } else {
+            current = current[index]?.children || [];
+          }
+        }
+        
+        if (targetNode) {
+          // Add diagram to the node's expanded content
+          if (!targetNode.expandedContent) {
+            targetNode.expandedContent = '';
+          }
+          targetNode.expandedContent += '\n\n' + diagram;
+          
+          // Re-render the canvas
+          renderHierarchicalCanvas(currentCanvasData);
+          
+          // Find and show the diagram in the DOM
+          setTimeout(() => {
+            const hierarchyDiv = document.getElementById('hierarchyRoot');
+            if (hierarchyDiv) {
+              // Find the node by path
+              let targetDiv = hierarchyDiv;
+              for (const index of topicPath) {
+                const children = targetDiv.querySelectorAll(':scope > .hierarchy-node');
+                targetDiv = children[index];
+                if (!targetDiv) break;
+              }
+              
+              if (targetDiv) {
+                const diagramDiv = targetDiv.querySelector('.hierarchy-diagram');
+                const expandedContent = targetDiv.querySelector('.hierarchy-expanded-content');
+                if (expandedContent) {
+                  expandedContent.classList.remove('hidden');
+                  // Re-render mermaid
+                  if (window.renderMermaidBlocks) {
+                    window.renderMermaidBlocks(expandedContent);
+                  }
+                }
+              }
+            }
+          }, 100);
+          
+          addSystemMessage(`Diagram generated for "${targetNode.title}"`);
+        }
+      }
+      
+      // Remove loading state from button if this user requested it
+      if (requestedBy === userId) {
+        const mermaidBtns = document.querySelectorAll('.mermaid-btn.loading');
+        mermaidBtns.forEach(btn => {
+          btn.classList.remove('loading');
+          btn.disabled = false;
+        });
+      }
+    });
 
     // Knowledge tree updates
     socket.on('knowledge:update', (data) => {
@@ -509,6 +578,10 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const item of canvas) {
       addCanvasItem(item, false);
     }
+    // Render mermaid diagrams after all items are added
+    if (window.renderMermaidBlocks) {
+      window.renderMermaidBlocks(sharedCanvas);
+    }
   }
 
   function addCanvasItem(item, scroll = true) {
@@ -522,17 +595,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const time = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+    // Process content for mermaid blocks
+    const processedContent = processMermaidContent(item.content);
+
     div.innerHTML = `
       <div class="canvas-item-header">
         <span class="canvas-item-type">${item.type}</span>
         <span class="canvas-item-user">${item.userName}</span>
       </div>
-      <div class="canvas-item-content">${escapeHtml(item.content)}</div>
+      <div class="canvas-item-content">${processedContent}</div>
       <div class="canvas-item-time">${time}</div>
     `;
 
     sharedCanvas.appendChild(div);
+    
+    // Render mermaid diagrams in this item
+    if (window.renderMermaidBlocks) {
+      window.renderMermaidBlocks(div);
+    }
+    
     if (scroll) sharedCanvas.scrollTop = sharedCanvas.scrollHeight;
+  }
+
+  // Process content to convert ```mermaid blocks to mermaid divs
+  function processMermaidContent(content) {
+    if (!content) return '';
+    
+    // Escape HTML first, then replace mermaid blocks
+    let escaped = escapeHtml(content);
+    
+    // Convert ```mermaid ... ``` blocks to mermaid divs
+    escaped = escaped.replace(/```mermaid\n?([\s\S]*?)```/g, function(match, code) {
+      return '<div class="mermaid">' + code.trim() + '</div>';
+    });
+    
+    return escaped;
   }
 
   // Render hierarchical canvas (LangGraph agent's understanding)
@@ -598,14 +695,26 @@ document.addEventListener('DOMContentLoaded', () => {
         <span class="hierarchy-toggle">${isExpanded ? '▼' : '▶'}</span>
         <span class="hierarchy-title">${escapeHtml(node.title)}</span>
         <span class="hierarchy-importance" title="Importance: ${importance}/10">${importance}</span>
+        <button class="mermaid-btn" title="Generate diagram for this topic">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="9" x2="15" y2="9"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+            <line x1="9" y1="9" x2="9" y2="15"></line>
+          </svg>
+        </button>
       </div>
-      ${node.content ? `<div class="hierarchy-content">${escapeHtml(node.content)}</div>` : ''}
-      ${node.expandedContent ? `<div class="hierarchy-expanded-content">${escapeHtml(node.expandedContent)}</div>` : ''}
+      ${node.content ? `<div class="hierarchy-content">${processMermaidContent(node.content)}</div>` : ''}
+      ${node.expandedContent ? `<div class="hierarchy-expanded-content">${processMermaidContent(node.expandedContent)}</div>` : ''}
+      <div class="hierarchy-diagram hidden"></div>
     `;
     
     // Add click handler for expansion
     const header = div.querySelector('.hierarchy-header');
-    header.addEventListener('click', () => {
+    header.addEventListener('click', (e) => {
+      // Don't expand if clicking the mermaid button
+      if (e.target.closest('.mermaid-btn')) return;
+      
       // If already has expanded content, just toggle visibility
       const expandedContent = div.querySelector('.hierarchy-expanded-content');
       const childrenDiv = div.querySelector('.hierarchy-children');
@@ -628,6 +737,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Request expansion from agent
         requestTopicExpansion(node, path, div, header);
       }
+    });
+    
+    // Add click handler for mermaid button
+    const mermaidBtn = div.querySelector('.mermaid-btn');
+    mermaidBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      requestTopicDiagram(node, path, div, mermaidBtn);
     });
     
     // Add children
@@ -659,6 +775,24 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Emit expansion request
     socket.emit('canvas:expand_topic', {
+      topicPath: path,
+      topicTitle: node.title,
+      topicContent: node.content || ''
+    });
+  }
+  
+  function requestTopicDiagram(node, path, nodeDiv, button) {
+    if (!socket) return;
+    
+    // Show loading state
+    button.classList.add('loading');
+    button.disabled = true;
+    
+    // Add system message
+    addSystemMessage(`Generating diagram for: "${node.title}"...`);
+    
+    // Emit diagram request
+    socket.emit('canvas:generate_diagram', {
       topicPath: path,
       topicTitle: node.title,
       topicContent: node.content || ''

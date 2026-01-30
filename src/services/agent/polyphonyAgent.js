@@ -353,6 +353,8 @@ Please analyze and create knowledge entries for key concepts.`;
     }
 
     prompt += `Tools available:
+
+When asked to create a diagram, flowchart, sequence diagram, mind map, or any structured visualization, you MUST use the mermaid_visualize tool. Pass the complete Mermaid markdown block (including triple backticks and "mermaid" language identifier) as the mermaid_code parameter. Explain the diagram to the user before posting the code.
 `;
 
     // Show recent canvas items for context

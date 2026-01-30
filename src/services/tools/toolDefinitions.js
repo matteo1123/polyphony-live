@@ -147,6 +147,20 @@ export const tools = [
       },
       required: ['reason']
     }
+  },
+  {
+    name: 'mermaid_visualize',
+    description: 'Create and display a Mermaid diagram on the shared canvas. Use this tool whenever a user requests a diagram, flowchart, sequence diagram, mind map, or any structured visualization. Posts the Mermaid code to the shared canvas with type "DIAGRAM" for all users to see.',
+    parameters: {
+      type: 'object',
+      properties: {
+        mermaid_code: {
+          type: 'string',
+          description: 'The complete Mermaid markdown block (e.g., ```mermaid\ngraph TD;\n  A-->B;\n  B-->C;\n```)'
+        }
+      },
+      required: ['mermaid_code']
+    }
   }
 ];
 
@@ -166,5 +180,6 @@ export const TOOLS = {
   SEARCH_KNOWLEDGE: 'search_knowledge',
   RENDER_VISUALIZATION: 'render_visualization',
   CONTRIBUTE: 'contribute',
-  REFRESH_CANVAS: 'refresh_canvas'
+  REFRESH_CANVAS: 'refresh_canvas',
+  MERMAID_VISUALIZE: 'mermaid_visualize'
 };

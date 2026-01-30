@@ -553,13 +553,13 @@ footer {
 
 /* Chat Panel - Fixed at bottom */
 .chat-panel {
-  flex: 0 0 35vh;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
-  min-height: 200px;
-  max-height: 40vh;
+  min-height: 250px;
+  max-height: 50vh;
   overflow: hidden;
 }
 
@@ -581,22 +581,22 @@ footer {
 .chat-messages {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: 100%;
   padding: 0.75rem;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 
 .message {
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem 1rem;
   background: var(--bg-tertiary);
   border-radius: 8px;
   max-width: 85%;
   font-size: 0.9rem;
   box-sizing: border-box;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .message.user {
@@ -624,7 +624,7 @@ footer {
 .message .sender {
   font-size: 0.75rem;
   color: var(--text-secondary);
-  margin-bottom: 0.2rem;
+  margin-bottom: 0.35rem;
   word-wrap: break-word;
 }
 
@@ -645,7 +645,7 @@ footer {
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
   min-height: 60px;
-  max-height: 150px;
+  max-height: 120px;
   background: var(--bg-secondary);
   overflow: hidden;
 }
@@ -1010,7 +1010,8 @@ footer {
     min-width: 350px;
     border-top: none;
     border-left: 1px solid var(--border);
-    max-height: 100%;
+    max-height: none;
+    height: 100%;
   }
   
   .knowledge-sidebar {
@@ -1039,7 +1040,8 @@ footer {
     min-width: 300px;
     border-top: none;
     border-left: 1px solid var(--border);
-    max-height: 100%;
+    max-height: none;
+    height: 100%;
   }
   
   .knowledge-sidebar {
@@ -1157,6 +1159,75 @@ footer {
   background: var(--bg-tertiary);
   border-radius: 10px;
   color: var(--text-secondary);
+}
+
+.mermaid-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  opacity: 0;
+}
+
+.hierarchy-header:hover .mermaid-btn {
+  opacity: 1;
+}
+
+.mermaid-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.mermaid-btn.loading {
+  opacity: 1;
+  cursor: wait;
+  background: var(--bg-tertiary);
+}
+
+.mermaid-btn.loading svg {
+  animation: spin 1s linear infinite;
+}
+
+.mermaid-btn svg {
+  display: block;
+}
+
+.hierarchy-diagram {
+  padding: 1rem;
+  margin: 0.5rem 1rem;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.hierarchy-diagram.hidden {
+  display: none;
+}
+
+/* Mermaid diagram container styles */
+.hierarchy-expanded-content .mermaid {
+  background: var(--bg-primary);
+  padding: 1rem;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  text-align: center;
+}
+
+.hierarchy-content .mermaid {
+  background: var(--bg-primary);
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  text-align: center;
 }
 
 .hierarchy-content {

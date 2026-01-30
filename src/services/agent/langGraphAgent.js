@@ -13,6 +13,17 @@ import { StateGraph, END, Annotation } from '@langchain/langgraph';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { SystemMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+
+// Directory for temporary canvas storage
+const CANVAS_STORAGE_DIR = process.env.CANVAS_STORAGE_DIR || path.join(os.tmpdir(), 'polyphony-canvases');
+
+// Ensure storage directory exists
+if (!fs.existsSync(CANVAS_STORAGE_DIR)) {
+  fs.mkdirSync(CANVAS_STORAGE_DIR, { recursive: true });
+}
 
 // Model configuration
 const MODEL_NAME = 'gemini-2.0-flash';
@@ -20,6 +31,7 @@ const MAX_ITERATIONS = 5;
 
 /**
  * Canvas State - Represents the agent's hierarchical understanding
+ * Persists to disk for durability across user disconnects/reconnects
  */
 class CanvasState {
   constructor(roomId, io) {
@@ -28,9 +40,61 @@ class CanvasState {
     this.canvas = {
       version: 0,
       lastUpdated: Date.now(),
-      centralIdea: null, // The core concept/phenomenon being discussed
-      hierarchy: [] // Hierarchical structure of understanding
+      centralIdea: null,
+      hierarchy: []
     };
+    this.storagePath = path.join(CANVAS_STORAGE_DIR, `${roomId}.json`);
+    
+    // Try to load existing canvas from disk
+    this.loadFromDisk();
+  }
+
+  /**
+   * Load canvas from disk if it exists
+   */
+  loadFromDisk() {
+    try {
+      if (fs.existsSync(this.storagePath)) {
+        const data = fs.readFileSync(this.storagePath, 'utf-8');
+        const savedCanvas = JSON.parse(data);
+        this.canvas = savedCanvas;
+        console.log(`CanvasState: loaded version ${this.canvas.version} for room ${this.roomId} from disk`);
+        return true;
+      }
+    } catch (error) {
+      console.error(`CanvasState: error loading from disk for room ${this.roomId}:`, error);
+    }
+    return false;
+  }
+
+  /**
+   * Save canvas to disk
+   */
+  saveToDisk() {
+    try {
+      fs.writeFileSync(this.storagePath, JSON.stringify(this.canvas, null, 2));
+      return true;
+    } catch (error) {
+      console.error(`CanvasState: error saving to disk for room ${this.roomId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Delete canvas file from disk (called when room is cleaned up)
+   */
+  static deleteFromDisk(roomId) {
+    try {
+      const storagePath = path.join(CANVAS_STORAGE_DIR, `${roomId}.json`);
+      if (fs.existsSync(storagePath)) {
+        fs.unlinkSync(storagePath);
+        console.log(`CanvasState: deleted storage for room ${roomId}`);
+        return true;
+      }
+    } catch (error) {
+      console.error(`CanvasState: error deleting from disk for room ${roomId}:`, error);
+    }
+    return false;
   }
 
   /**
@@ -47,6 +111,9 @@ class CanvasState {
     if (hierarchicalData.hierarchy) {
       this.canvas.hierarchy = hierarchicalData.hierarchy;
     }
+
+    // Save to disk for persistence
+    this.saveToDisk();
 
     // Broadcast to all users
     this.io.to(this.roomId).emit('canvas:full_update', {
@@ -67,29 +134,40 @@ class CanvasState {
 
   /**
    * Export canvas as markdown (hierarchical order)
+   * Includes all content including diagrams
    */
   exportToMarkdown() {
     let md = `# ${this.canvas.centralIdea || 'Polyphony Session'}\n\n`;
     md += `*Last updated: ${new Date(this.canvas.lastUpdated).toLocaleString()}*\n\n`;
     
     for (const level1 of this.canvas.hierarchy || []) {
-      md += `## ${level1.title}\n\n`;
-      if (level1.content) {
-        md += `${level1.content}\n\n`;
-      }
-      
-      for (const level2 of level1.children || []) {
-        md += `### ${level2.title}\n\n`;
-        if (level2.content) {
-          md += `${level2.content}\n\n`;
-        }
-        
-        for (const level3 of level2.children || []) {
-          md += `#### ${level3.title}\n\n`;
-          if (level3.content) {
-            md += `${level3.content}\n\n`;
-          }
-        }
+      md += this.exportNodeToMarkdown(level1, 2);
+    }
+    
+    return md;
+  }
+
+  /**
+   * Export a single node and its children to markdown
+   */
+  exportNodeToMarkdown(node, level) {
+    const heading = '#'.repeat(level);
+    let md = `${heading} ${node.title}\n\n`;
+    
+    // Export main content
+    if (node.content) {
+      md += `${node.content}\n\n`;
+    }
+    
+    // Export expanded content (includes diagrams)
+    if (node.expandedContent) {
+      md += `${node.expandedContent}\n\n`;
+    }
+    
+    // Export children recursively
+    if (node.children && node.children.length > 0) {
+      for (const child of node.children) {
+        md += this.exportNodeToMarkdown(child, level + 1);
       }
     }
     
@@ -409,12 +487,23 @@ ${relevantKnowledge.map(k => `- ${k.topic}: ${k.content.slice(0, 300)}...`).join
 AVAILABLE TOOLS:
 - contribute(type, title, content, importance, tags): Add insights to the collective understanding. This updates BOTH the canvas AND knowledge base automatically.
 - refresh_canvas(reason): Rebuild the entire canvas when topic shifts significantly.
+- mermaid_visualize(mermaid_code): Create a Mermaid diagram and display it on the shared canvas. Use for flowcharts, sequence diagrams, mind maps, or any visual representation.
 
 WHEN TO USE contribute:
 - When you have a clear insight or concept to share
 - When you identify a key theme from the user's message
 - When synthesizing information from multiple sources
 - When explaining an important concept
+
+WHEN TO USE mermaid_visualize:
+- When the user asks for a diagram, flowchart, or visual representation
+- When explaining complex relationships or processes
+- When the user explicitly requests a mermaid diagram
+- To visualize hierarchies, sequences, or flows
+
+MERMAID EXAMPLES:
+- Flowchart: \`\`\`mermaid\ngraph TD;\n  A[Start] --> B{Decision};\n  B -->|Yes| C[Action];\n  B -->|No| D[End];\n\`\`\`
+- Sequence: \`\`\`mermaid\nsequenceDiagram;\n  participant A;\n  participant B;\n  A->>B: Message;\n\`\`\`
 
 EXAMPLES of good contribute calls:
 - contribute("concept", "Agentic Design Patterns", "Description of the pattern...", 9, ["agentic", "design-pattern"])
@@ -441,11 +530,20 @@ CRITICAL INSTRUCTIONS:
       ...messageHistory
     ]);
 
-    const finalResponse = response.content.toString();
+    let finalResponse = response.content.toString();
+
+    // Execute any tool calls in the response
+    const toolResults = await this.executeToolCalls(finalResponse, state);
+    
+    // If tools were executed, include results in response
+    if (toolResults.length > 0) {
+      finalResponse += '\n\n[Tools executed: ' + toolResults.map(r => r.tool).join(', ') + ']';
+    }
 
     return {
       ...state,
-      finalResponse
+      finalResponse,
+      toolResults
     };
   }
 
@@ -564,6 +662,128 @@ CRITICAL INSTRUCTIONS:
         knowledgeUpdate: null
       };
     }
+  }
+
+  /**
+   * Execute tool calls found in the model's response
+   * Parses tool calls in format: tool_name({ json_args })
+   */
+  async executeToolCalls(response, state) {
+    const { roomId, userId, userName, socketId } = state;
+    const results = [];
+    
+    // Find tool calls in the response
+    // Match patterns like: contribute({ ... }) or mermaid_visualize({ ... })
+    const toolCallRegex = /(\w+)\s*\(\s*(\{[\s\S]*?\})\s*\)/g;
+    let match;
+    
+    while ((match = toolCallRegex.exec(response)) !== null) {
+      const toolName = match[1];
+      const argsJson = match[2];
+      
+      // Only process known tools
+      if (!['contribute', 'refresh_canvas', 'mermaid_visualize'].includes(toolName)) {
+        continue;
+      }
+      
+      try {
+        const args = JSON.parse(argsJson);
+        
+        console.log(`LangGraphAgent: executing tool ${toolName} with args:`, args);
+        
+        switch (toolName) {
+          case 'contribute':
+            await this.executeContributeTool(args, { roomId, userId, userName, socketId });
+            results.push({ tool: toolName, success: true });
+            break;
+            
+          case 'refresh_canvas':
+            await this.queueCanvasRefresh(roomId);
+            results.push({ tool: toolName, success: true });
+            break;
+            
+          case 'mermaid_visualize':
+            await this.executeMermaidTool(args, { roomId, userId, userName, socketId });
+            results.push({ tool: toolName, success: true });
+            break;
+        }
+      } catch (error) {
+        console.error(`LangGraphAgent: tool ${toolName} failed:`, error);
+        results.push({ tool: toolName, success: false, error: error.message });
+      }
+    }
+    
+    return results;
+  }
+  
+  /**
+   * Execute contribute tool - adds to canvas and knowledge base
+   */
+  async executeContributeTool(args, context) {
+    const { roomId, userId, userName } = context;
+    const { type, title, content, importance = 5, tags = [] } = args;
+    
+    if (!type || !title || !content) {
+      throw new Error('contribute requires type, title, and content');
+    }
+    
+    // Add to knowledge base
+    await this.vectorDB.createKnowledgeEntry(
+      roomId,
+      userId,
+      title,
+      content,
+      [...tags, type, 'contribution'],
+      []
+    );
+    
+    // Add to canvas via socket
+    const contribution = {
+      id: `contrib-${Date.now()}`,
+      type,
+      title,
+      content,
+      importance,
+      userName: userName || 'Agent',
+      timestamp: Date.now(),
+      tags
+    };
+    
+    this.io.to(roomId).emit('canvas:update', { contribution });
+    console.log(`LangGraphAgent: contributed "${title}" to canvas`);
+  }
+  
+  /**
+   * Execute mermaid visualize tool - posts diagram to canvas
+   */
+  async executeMermaidTool(args, context) {
+    const { roomId, userName } = context;
+    const { mermaid_code } = args;
+    
+    if (!mermaid_code) {
+      throw new Error('mermaid_visualize requires mermaid_code');
+    }
+    
+    // Ensure mermaid code has the ```mermaid wrapper
+    let formattedCode = mermaid_code.trim();
+    if (!formattedCode.startsWith('```mermaid')) {
+      formattedCode = '```mermaid\n' + formattedCode + '\n```';
+    }
+    
+    // Add to canvas via socket
+    const contribution = {
+      id: `diagram-${Date.now()}`,
+      type: 'DIAGRAM',
+      title: 'Mermaid Diagram',
+      content: formattedCode,
+      importance: 7,
+      userName: userName || 'Agent',
+      timestamp: Date.now(),
+      tags: ['diagram', 'mermaid']
+    };
+    
+    this.io.to(roomId).emit('canvas:update', { contribution });
+    console.log(`LangGraphAgent: posted mermaid diagram to canvas`);
   }
 
   /**
@@ -851,10 +1071,139 @@ Respond with:
   }
 
   /**
+   * Handle diagram generation request for a specific topic
+   */
+  async handleDiagramGeneration(roomId, userId, userName, socketId, topicPath, topicTitle, topicContent) {
+    try {
+      console.log(`LangGraphAgent: generating diagram for "${topicTitle}" in room ${roomId}`);
+
+      // Get current canvas for context
+      const roomState = this.roomStates.get(roomId);
+      const currentCanvas = roomState?.canvasState?.get();
+
+      // Get relevant knowledge about this topic
+      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 5);
+
+      // Build diagram generation prompt
+      const diagramPrompt = `You are creating a Mermaid diagram to visualize the topic: "${topicTitle}".
+
+CONTEXT:
+Topic: ${topicTitle}
+Current Content: ${topicContent || 'No content yet'}
+
+Relevant Knowledge:
+${relevantKnowledge.map(k => `- ${k.topic}: ${k.content.slice(0, 300)}...`).join('\n')}
+
+Your task:
+1. Create a clear, informative Mermaid diagram that visualizes this topic
+2. Choose the appropriate diagram type:
+   - graph TD (flowchart) for processes, relationships, hierarchies
+   - sequenceDiagram for interactions over time
+   - mindmap for conceptual relationships
+   - classDiagram for structural relationships
+   - stateDiagram for state transitions
+   - erDiagram for entity relationships
+   - pie for proportional data
+   - gantt for timelines
+   - journey for user journeys
+3. Keep it simple but informative (5-15 elements)
+4. Use descriptive labels
+5. Include a brief explanation before the diagram
+
+Respond with:
+1. A brief explanation of what the diagram shows (1-2 sentences)
+2. The complete Mermaid diagram code in a code block
+
+Example format:
+Here's a diagram showing the relationships between X and Y:
+
+\`\`\`mermaid
+graph TD;
+  A[Concept A] --> B[Concept B];
+  B --> C[Concept C];
+  A --> C;
+\`\`\``;
+
+      const response = await this.model.invoke([
+        new SystemMessage(diagramPrompt),
+        new HumanMessage(`Please create a diagram for "${topicTitle}".`)
+      ]);
+
+      const responseContent = response.content.toString();
+
+      // Extract mermaid code from response
+      const mermaidMatch = responseContent.match(/```mermaid\s*\n?([\s\S]*?)```/);
+      let diagramCode = '';
+      
+      if (mermaidMatch) {
+        diagramCode = mermaidMatch[0]; // Include the full code block
+      } else {
+        // If no code block found, wrap the whole response
+        diagramCode = '```mermaid\n' + responseContent + '\n```';
+      }
+
+      // Add diagram to the canvas node
+      await this.addDiagramToCanvas(roomId, topicPath, diagramCode);
+
+      return {
+        content: `I've created a diagram for "${topicTitle}". You can see it in the canvas above!`,
+        diagram: diagramCode
+      };
+    } catch (error) {
+      console.error('LangGraphAgent: error in handleDiagramGeneration:', error);
+      return {
+        content: `I encountered an error creating the diagram: ${error.message}`,
+        diagram: null
+      };
+    }
+  }
+
+  /**
+   * Add diagram to a specific canvas node
+   */
+  async addDiagramToCanvas(roomId, topicPath, diagramCode) {
+    const roomState = this.roomStates.get(roomId);
+    if (!roomState?.canvasState) return;
+
+    const canvas = roomState.canvasState.get();
+    
+    // Navigate to the topic
+    let current = canvas.hierarchy;
+    let target = null;
+
+    for (let i = 0; i < topicPath.length; i++) {
+      const index = topicPath[i];
+      if (i === topicPath.length - 1) {
+        target = current[index];
+      } else {
+        current = current[index]?.children || [];
+      }
+    }
+
+    if (target) {
+      // Add diagram to expanded content
+      if (!target.expandedContent) {
+        target.expandedContent = '';
+      }
+      target.expandedContent += '\n\n' + diagramCode;
+
+      // Update canvas
+      await roomState.canvasState.update({
+        centralIdea: canvas.centralIdea,
+        hierarchy: canvas.hierarchy
+      });
+    }
+  }
+
+  /**
    * Room cleanup
    */
   async handleRoomCleanup(roomId) {
     console.log(`LangGraphAgent: cleaning up room ${roomId}`);
+    
+    // Delete the persistent canvas file
+    CanvasState.deleteFromDisk(roomId);
+    
     await this.fileStorage.cleanupRoom(roomId);
     await this.vectorDB.cleanupRoom(roomId);
     await this.redisClient.cleanupRoom(roomId);

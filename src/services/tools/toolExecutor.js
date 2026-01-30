@@ -34,6 +34,9 @@ export class ToolExecutor {
         case TOOLS.REFRESH_CANVAS:
           return await this.executeRefreshCanvas(args, context);
 
+        case TOOLS.MERMAID_VISUALIZE:
+          return await this.executeMermaidVisualize(args, context);
+
         default:
           return { error: `Unknown tool: ${toolName}` };
       }
@@ -187,6 +190,41 @@ export class ToolExecutor {
       title,
       knowledgeEntryId: knowledgeEntry?.id,
       note: 'Added to both canvas (visible to all) and knowledge base (searchable)'
+    };
+  }
+
+  // Mermaid visualize tool - posts diagram to shared canvas
+  async executeMermaidVisualize(args, context) {
+    const { mermaid_code } = args;
+
+    if (!mermaid_code) {
+      return { error: 'mermaid_code is required' };
+    }
+
+    // Ensure mermaid code has the ```mermaid wrapper for proper rendering
+    let formattedCode = mermaid_code.trim();
+    if (!formattedCode.startsWith('```mermaid')) {
+      formattedCode = '```mermaid\n' + formattedCode + '\n```';
+    }
+
+    // Create a diagram contribution to be added to the canvas
+    const contribution = {
+      type: 'DIAGRAM',
+      title: 'Mermaid Diagram',
+      content: formattedCode,
+      importance: 7,
+      userName: context.userName || 'Agent'
+    };
+
+    // Add to canvas via callback
+    if (this.canvasCallback) {
+      await this.canvasCallback(context, contribution);
+    }
+
+    return {
+      success: true,
+      message: 'Mermaid diagram posted to shared canvas',
+      type: 'DIAGRAM'
     };
   }
 
