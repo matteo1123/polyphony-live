@@ -10,6 +10,7 @@ import { FileStorage } from './services/storage/fileStorage.js';
 import { VectorDB } from './services/storage/vectorDB.js';
 import { LangGraphAgent } from './services/agent/langGraphAgent.js';
 import { SocketHandler } from './handlers/socketHandler.js';
+import { ConvexService } from './services/convexClient.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -60,12 +61,13 @@ const redisClient = new RedisClient(
 
 const fileStorage = new FileStorage();
 const vectorDB = new VectorDB(redisClient);
+const convexService = new ConvexService();
 
 // Initialize LangGraph Agent
 const agent = new LangGraphAgent(redisClient, fileStorage, vectorDB, io);
 
 // Setup Socket.io handlers
-const socketHandler = new SocketHandler(io, redisClient, agent);
+const socketHandler = new SocketHandler(io, redisClient, agent, convexService);
 socketHandler.setupHandlers();
 
 const PORT = process.env.PORT || 3000;

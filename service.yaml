@@ -36,6 +36,8 @@ spec:
               value: "6379"
             - name: CORS_ORIGIN
               value: "*"
+            - name: CONVEX_URL
+              value: CONVEX_URL_PLACEHOLDER
           secrets:
             - name: GOOGLE_AI_API_KEY
               valueFrom:

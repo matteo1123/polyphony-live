@@ -1,10 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 
 export class SocketHandler {
-  constructor(io, redisClient, agent) {
+  constructor(io, redisClient, agent, convexService = null) {
     this.io = io;
     this.redisClient = redisClient;
     this.agent = agent;
+    this.convexService = convexService;
     this.userSessions = new Map(); // Track user sessions
     this.processedMessages = new Set(); // Deduplication set
   }
@@ -108,6 +109,10 @@ export class SocketHandler {
       const activeUserCount = await this.redisClient.getActiveUserCount(roomId);
       if (activeUserCount === 1) {
         this.agent.registerRoom(roomId, userId);
+        // Record space creation in Convex
+        if (this.convexService) {
+          await this.convexService.recordSpaceCreated(roomId, userId);
+        }
       }
 
       // Get existing active users
@@ -379,10 +384,9 @@ export class SocketHandler {
       const activeUserCount = await this.redisClient.getActiveUserCount(roomId);
 
       if (activeUserCount === 0) {
-        // Trigger room cleanup
-        this.agent.unregisterRoom(roomId);
-        await this.agent.handleRoomCleanup(roomId);
-        console.log(`Room ${roomId} is now empty, cleanup initiated`);
+        // Trigger room cleanup - save meeting summary to Convex first
+        console.log(`Room ${roomId} is now empty, saving meeting summary...`);
+        await this.saveMeetingSummaryAndCleanup(roomId);
       } else {
         // Notify remaining users (PUBLIC)
         this.io.to(roomId).emit('room:user_left', {
@@ -400,6 +404,43 @@ export class SocketHandler {
       console.log(`User ${userName} disconnected from room ${roomId}`);
     } catch (error) {
       console.error('Error handling disconnect:', error);
+    }
+  }
+
+  /**
+   * Save meeting summary to Convex and clean up the room
+   * This is called when the last user disconnects
+   */
+  async saveMeetingSummaryAndCleanup(roomId) {
+    try {
+      // Generate the export (same as what user would get from export:request)
+      const markdown = await this.agent.generateExport(roomId);
+      
+      // Save to Convex if available
+      if (this.convexService && this.convexService.isAvailable()) {
+        const saved = await this.convexService.saveMeetingSummary(roomId, markdown);
+        if (saved) {
+          console.log(`✅ Meeting summary for room ${roomId} saved to Convex`);
+        } else {
+          console.warn(`⚠️ Failed to save meeting summary for room ${roomId} to Convex`);
+        }
+      } else {
+        console.log(`⚠️ Convex not configured - skipping save for room ${roomId}`);
+      }
+
+      // Now clean up the room
+      this.agent.unregisterRoom(roomId);
+      await this.agent.handleRoomCleanup(roomId);
+      console.log(`Room ${roomId} cleanup completed`);
+    } catch (error) {
+      console.error(`Error during meeting summary save/cleanup for room ${roomId}:`, error);
+      // Still try to clean up even if saving failed
+      try {
+        this.agent.unregisterRoom(roomId);
+        await this.agent.handleRoomCleanup(roomId);
+      } catch (cleanupError) {
+        console.error(`Failed to cleanup room ${roomId}:`, cleanupError);
+      }
     }
   }
 

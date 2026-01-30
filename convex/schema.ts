@@ -13,6 +13,7 @@ export default defineSchema({
     totalFiles: v.number(),
     closedAt: v.optional(v.number()),
     durationMs: v.optional(v.number()),
+    summaryMarkdown: v.optional(v.string()), // Meeting summary exported on close
   }).index("by_spaceId", ["spaceId"]),
 
   // Developer event logs

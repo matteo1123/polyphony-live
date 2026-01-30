@@ -31,7 +31,7 @@ steps:
       - 'managed'
       - '--allow-unauthenticated'
       - '--set-env-vars'
-      - 'NODE_ENV=production,REDIS_HOST=${_REDIS_HOST},REDIS_PORT=${_REDIS_PORT},CORS_ORIGIN=${_CORS_ORIGIN}'
+      - 'NODE_ENV=production,REDIS_HOST=${_REDIS_HOST},REDIS_PORT=${_REDIS_PORT},CORS_ORIGIN=${_CORS_ORIGIN},CONVEX_URL=${_CONVEX_URL}'
       - '--set-secrets'
       - 'GOOGLE_AI_API_KEY=google-ai-api-key:latest'
       - '--memory'
@@ -60,6 +60,7 @@ substitutions:
   _REDIS_HOST: localhost  # Update with your Memorystore Redis IP
   _REDIS_PORT: '6379'
   _CORS_ORIGIN: '*'  # Update with your frontend domain in production
+  _CONVEX_URL: ''  # Optional: Your Convex deployment URL (e.g., https://your-app.convex.cloud)
   _MEMORY: 1Gi
   _CPU: '1'
   _CONCURRENCY: '1000'

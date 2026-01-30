@@ -90,3 +90,29 @@ export const getSpace = query({
       .first();
   },
 });
+
+// Record meeting summary when space closes
+export const recordMeetingSummary = mutation({
+  args: {
+    spaceId: v.string(),
+    summaryMarkdown: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const space = await ctx.db
+      .query("spaces")
+      .withIndex("by_spaceId", (q) => q.eq("spaceId", args.spaceId))
+      .first();
+
+    if (space) {
+      const closedAt = Date.now();
+      await ctx.db.patch(space._id, {
+        closedAt,
+        durationMs: closedAt - space.createdAt,
+        summaryMarkdown: args.summaryMarkdown,
+      });
+      console.log(`Meeting summary saved for space ${args.spaceId}`);
+    } else {
+      console.warn(`Space ${args.spaceId} not found when saving summary`);
+    }
+  },
+});

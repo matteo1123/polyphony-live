@@ -7,6 +7,7 @@ This guide walks you through deploying Polyphony.live to Google Cloud Run.
 - [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed and authenticated
 - A Google Cloud project with billing enabled
 - Docker installed (for local testing)
+- [Convex](https://convex.dev) account (optional - for meeting summaries)
 
 ## Architecture on GCP
 
@@ -179,7 +180,19 @@ Since Cloud Run containers are ephemeral, Redis is essential for:
 - **Scale down**: To `--min-instances` (should be >= 1 for WebSocket)
 - **Idle timeout**: 300 seconds (configurable)
 
-### Cost Optimization
+### Environment Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `NODE_ENV` | Yes | Environment mode | `production` |
+| `PORT` | Yes | HTTP port (Cloud Run sets this) | `8080` |
+| `REDIS_HOST` | Yes | Redis/Memorystore IP | `10.0.0.3` |
+| `REDIS_PORT` | Yes | Redis port | `6379` |
+| `CORS_ORIGIN` | Yes | Allowed origins | `*` or `https://yourdomain.com` |
+| `GOOGLE_AI_API_KEY` | Yes | Gemini API key | (from Secret Manager) |
+| `CONVEX_URL` | No | Convex deployment URL | `https://your-app.convex.cloud` |
+
+## Cost Optimization
 
 ```bash
 # Development (scale to zero)
@@ -222,6 +235,57 @@ Check:
 gcloud builds list
 gcloud builds log BUILD_ID
 ```
+
+## Meeting Summaries with Convex (Optional)
+
+Polyphony.live can automatically save meeting summaries to Convex when a space closes. This happens when the last user disconnects.
+
+### Setup Convex
+
+1. **Create a Convex project** at https://dashboard.convex.dev
+
+2. **Get your Convex URL** from the dashboard (looks like `https://your-project.convex.cloud`)
+
+3. **Deploy Convex schema** (if not already done):
+   ```bash
+   cd /root/polyphony-live
+   npx convex dev
+   # or for production:
+   npx convex deploy
+   ```
+
+4. **Set the CONVEX_URL environment variable** during deployment:
+   ```bash
+   gcloud run deploy $SERVICE_NAME \
+       --image $REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME \
+       --region $REGION \
+       --set-env-vars "CONVEX_URL=https://your-project.convex.cloud"
+   ```
+
+   Or using Cloud Build:
+   ```bash
+   gcloud builds submit --config cloudbuild.yaml \
+       --substitutions=_REGION=$REGION,_REDIS_HOST=YOUR_REDIS_IP,_CONVEX_URL=https://your-project.convex.cloud
+   ```
+
+### How It Works
+
+- When a space is created (first user joins), a record is created in Convex with `spaceId`, `createdAt`, etc.
+- When the last user disconnects, the meeting summary (same as the export markdown) is saved to `summaryMarkdown` field
+- The space record is updated with `closedAt`, `durationMs`, and the summary
+
+### Convex Schema
+
+The `spaces` table in Convex includes:
+- `spaceId`: Unique identifier for the space
+- `createdAt`: When the space was created
+- `createdBy`: Who created it
+- `peakUsers`: Maximum concurrent users
+- `totalMessages`: Total message count
+- `totalFiles`: Total files uploaded
+- `closedAt`: When the space closed
+- `durationMs`: Duration in milliseconds
+- `summaryMarkdown`: **The exported meeting summary** (populated when space closes)
 
 ## Cleanup
 
