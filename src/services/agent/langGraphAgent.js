@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { MemoryManager } from './memoryManager.js';
 
 // Directory for temporary canvas storage
 const CANVAS_STORAGE_DIR = process.env.CANVAS_STORAGE_DIR || path.join(os.tmpdir(), 'polyphony-canvases');
@@ -553,6 +554,9 @@ CRITICAL INSTRUCTIONS:
   registerRoom(roomId, adminUserId, metadata = {}) {
     const canvasState = new CanvasState(roomId, this.io);
     
+    // Initialize memory manager for this room
+    const memoryManager = new MemoryManager(roomId, this.model, this.io);
+    
     this.roomStates.set(roomId, {
       ...metadata,
       adminUserId,
@@ -560,7 +564,8 @@ CRITICAL INSTRUCTIONS:
       settings: {
         groupChatEnabled: false
       },
-      canvasState
+      canvasState,
+      memoryManager
     });
 
     console.log(`LangGraphAgent: room registered ${roomId}, admin: ${adminUserId}`);
@@ -613,8 +618,12 @@ CRITICAL INSTRUCTIONS:
    */
   async handleMessage(roomId, userId, userName, socketId, content, conversationHistory = []) {
     try {
+      // Get room state
+      const roomState = this.roomStates.get(roomId);
+      const memoryManager = roomState?.memoryManager;
+      
       // Create knowledge entry from user's message
-      await this.vectorDB.createKnowledgeEntry(
+      const knowledgeEntry = await this.vectorDB.createKnowledgeEntry(
         roomId,
         userId,
         `User: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`,
@@ -622,6 +631,19 @@ CRITICAL INSTRUCTIONS:
         ['user-input'],
         []
       );
+      
+      // Also add to memory manager
+      if (memoryManager) {
+        await memoryManager.addEntry({
+          userId,
+          userName,
+          topic: `User Input: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`,
+          content,
+          tags: ['user-input', 'message'],
+          type: 'knowledge',
+          importance: 5
+        });
+      }
 
       // Build message history
       const messages = [
@@ -646,7 +668,6 @@ CRITICAL INSTRUCTIONS:
       });
 
       // Get updated canvas for UI
-      const roomState = this.roomStates.get(roomId);
       const knowledgeUpdate = this.buildKnowledgeTreeFromCanvas(
         roomState?.canvasState?.get()
       );
@@ -717,7 +738,7 @@ CRITICAL INSTRUCTIONS:
   }
   
   /**
-   * Execute contribute tool - adds to canvas and knowledge base
+   * Execute contribute tool - adds to canvas, knowledge base, and memory
    */
   async executeContributeTool(args, context) {
     const { roomId, userId, userName } = context;
@@ -737,6 +758,20 @@ CRITICAL INSTRUCTIONS:
       []
     );
     
+    // Add to memory manager
+    const roomState = this.roomStates.get(roomId);
+    if (roomState?.memoryManager) {
+      await roomState.memoryManager.addEntry({
+        userId,
+        userName,
+        topic: title,
+        content,
+        tags: [...tags, type, 'contribution'],
+        type: 'contribution',
+        importance
+      });
+    }
+    
     // Add to canvas via socket
     const contribution = {
       id: `contrib-${Date.now()}`,
@@ -750,14 +785,14 @@ CRITICAL INSTRUCTIONS:
     };
     
     this.io.to(roomId).emit('canvas:update', { contribution });
-    console.log(`LangGraphAgent: contributed "${title}" to canvas`);
+    console.log(`LangGraphAgent: contributed "${title}" to canvas and memory`);
   }
   
   /**
-   * Execute mermaid visualize tool - posts diagram to canvas
+   * Execute mermaid visualize tool - posts diagram to canvas and memory
    */
   async executeMermaidTool(args, context) {
-    const { roomId, userName } = context;
+    const { roomId, userId, userName } = context;
     const { mermaid_code } = args;
     
     if (!mermaid_code) {
@@ -768,6 +803,20 @@ CRITICAL INSTRUCTIONS:
     let formattedCode = mermaid_code.trim();
     if (!formattedCode.startsWith('```mermaid')) {
       formattedCode = '```mermaid\n' + formattedCode + '\n```';
+    }
+    
+    // Add to memory manager
+    const roomState = this.roomStates.get(roomId);
+    if (roomState?.memoryManager) {
+      await roomState.memoryManager.addEntry({
+        userId,
+        userName,
+        topic: 'Mermaid Diagram',
+        content: formattedCode,
+        tags: ['diagram', 'mermaid'],
+        type: 'diagram',
+        importance: 7
+      });
     }
     
     // Add to canvas via socket
@@ -783,7 +832,7 @@ CRITICAL INSTRUCTIONS:
     };
     
     this.io.to(roomId).emit('canvas:update', { contribution });
-    console.log(`LangGraphAgent: posted mermaid diagram to canvas`);
+    console.log(`LangGraphAgent: posted mermaid diagram to canvas and memory`);
   }
 
   /**
@@ -869,6 +918,9 @@ Respond as JSON:
             summary: c.content.slice(0, 200)
           }));
 
+      // Get room state for memory manager
+      const roomState = this.roomStates.get(roomId);
+      
       for (let i = 0; i < entriesToCreate.length; i++) {
         const topic = entriesToCreate[i];
         const chunkContent = chunks[i]?.content || topic.summary;
@@ -882,10 +934,23 @@ Respond as JSON:
           [],
           { sourceMetadata: { fileName, topic: topic.title } }
         );
+        
+        // Also add to memory manager
+        if (roomState?.memoryManager) {
+          await roomState.memoryManager.addEntry({
+            userId,
+            userName: 'System',
+            topic: topic.title,
+            content: chunkContent,
+            tags: ['file-upload', fileType.slice(1), 'extracted-topic'],
+            type: 'knowledge',
+            importance: 6,
+            sourceMetadata: { fileName }
+          });
+        }
       }
 
       // Trigger canvas refresh
-      const roomState = this.roomStates.get(roomId);
       if (roomState?.canvasState) {
         this.queueCanvasRefresh(roomId);
       }
@@ -937,15 +1002,29 @@ Respond as JSON:
   }
 
   /**
-   * Generate export
+   * Generate comprehensive export of ALL memory
    */
   async generateExport(roomId) {
     const roomState = this.roomStates.get(roomId);
-    if (!roomState?.canvasState) {
-      return '# No canvas data available';
+    if (!roomState) {
+      return '# No room data available';
     }
 
-    return roomState.canvasState.exportToMarkdown();
+    let md = `# Polyphony Session Export\n\n`;
+    md += `*Room: ${roomId}*\n`;
+    md += `*Exported: ${new Date().toLocaleString()}*\n\n`;
+    
+    // Add comprehensive memory export if available
+    if (roomState.memoryManager) {
+      md += roomState.memoryManager.exportToMarkdown();
+    } else if (roomState.canvasState) {
+      // Fallback to canvas-only export
+      md += roomState.canvasState.exportToMarkdown();
+    } else {
+      md += '# No data available';
+    }
+    
+    return md;
   }
 
   /**
@@ -1085,65 +1164,167 @@ Respond with:
       const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 5);
 
       // Build diagram generation prompt
+      // Limit content length to avoid overwhelming the LLM
+      const truncatedContent = topicContent ? topicContent.slice(0, 1000) : 'No content yet';
+      
       const diagramPrompt = `You are creating a Mermaid diagram to visualize the topic: "${topicTitle}".
 
-CONTEXT:
+CRITICAL: You MUST output valid Mermaid syntax that can be rendered by the Mermaid library.
+
 Topic: ${topicTitle}
-Current Content: ${topicContent || 'No content yet'}
+Content Summary: ${truncatedContent}
 
-Relevant Knowledge:
-${relevantKnowledge.map(k => `- ${k.topic}: ${k.content.slice(0, 300)}...`).join('\n')}
+Valid Mermaid diagram types and their CORRECT syntax:
 
-Your task:
-1. Create a clear, informative Mermaid diagram that visualizes this topic
-2. Choose the appropriate diagram type:
-   - graph TD (flowchart) for processes, relationships, hierarchies
-   - sequenceDiagram for interactions over time
-   - mindmap for conceptual relationships
-   - classDiagram for structural relationships
-   - stateDiagram for state transitions
-   - erDiagram for entity relationships
-   - pie for proportional data
-   - gantt for timelines
-   - journey for user journeys
-3. Keep it simple but informative (5-15 elements)
-4. Use descriptive labels
-5. Include a brief explanation before the diagram
-
-Respond with:
-1. A brief explanation of what the diagram shows (1-2 sentences)
-2. The complete Mermaid diagram code in a code block
-
-Example format:
-Here's a diagram showing the relationships between X and Y:
-
+1. FLOWCHART (graph TD):
 \`\`\`mermaid
 graph TD;
-  A[Concept A] --> B[Concept B];
-  B --> C[Concept C];
-  A --> C;
-\`\`\``;
+  A[Start] --> B{Decision};
+  B -->|Yes| C[Action 1];
+  B -->|No| D[Action 2];
+  C --> E[End];
+  D --> E;
+\`\`\`
+
+2. MINDMAP:
+\`\`\`mermaid
+mindmap
+  root((Central Topic))
+    Subtopic1
+      Detail A
+      Detail B
+    Subtopic2
+      Detail C
+\`\`\`
+
+3. SEQUENCE DIAGRAM:
+\`\`\`mermaid
+sequenceDiagram
+  participant A as User
+  participant B as System
+  A->>B: Request
+  B-->>A: Response
+\`\`\`
+
+4. CLASS DIAGRAM:
+\`\`\`mermaid
+classDiagram
+  class ClassA {
+    +attribute
+    +method()
+  }
+  class ClassB
+  ClassA --> ClassB
+\`\`\`
+
+RULES:
+- Use proper Mermaid keywords: graph TD, mindmap, sequenceDiagram, classDiagram, stateDiagram, erDiagram, pie, gantt
+- Use arrows: --> for flowcharts, ->> for sequence diagrams
+- Use brackets: [] for rectangles, {} for diamonds, () for circles
+- DO NOT output indented text lists - those are NOT valid Mermaid
+- Always wrap in \`\`\`mermaid code blocks
+- Keep it simple: 5-12 elements maximum
+
+Your task:
+1. Analyze the topic and content
+2. Choose ONE appropriate diagram type
+3. Create a valid Mermaid diagram using the exact syntax shown above
+4. Output ONLY the code block with the diagram
+
+Now create a Mermaid diagram for: "${topicTitle}"`;
 
       const response = await this.model.invoke([
         new SystemMessage(diagramPrompt),
         new HumanMessage(`Please create a diagram for "${topicTitle}".`)
       ]);
 
-      const responseContent = response.content.toString();
+      let responseContent = response.content.toString();
 
       // Extract mermaid code from response
       const mermaidMatch = responseContent.match(/```mermaid\s*\n?([\s\S]*?)```/);
       let diagramCode = '';
+      let mermaidBody = '';
       
       if (mermaidMatch) {
         diagramCode = mermaidMatch[0]; // Include the full code block
+        mermaidBody = mermaidMatch[1].trim();
       } else {
         // If no code block found, wrap the whole response
-        diagramCode = '```mermaid\n' + responseContent + '\n```';
+        mermaidBody = responseContent.trim();
+        diagramCode = '```mermaid\n' + mermaidBody + '\n```';
+      }
+
+      // Validate that it looks like valid Mermaid (not just indented text)
+      const validMermaidPatterns = [
+        /^\s*(graph\s+(TD|TB|BT|RL|LR)|mindmap|sequenceDiagram|classDiagram|stateDiagram|erDiagram|pie|gantt|journey|flowchart\s+(TD|TB|BT|RL|LR))/im,
+        /\[.+\]/,  // Has bracket syntax like [Node]
+        /-->/,     // Has arrows
+        /\{.+\}/,  // Has curly braces
+        /\(.+\)/   // Has parentheses
+      ];
+      
+      const looksLikeMermaid = validMermaidPatterns.some(pattern => pattern.test(mermaidBody));
+      
+      if (!looksLikeMermaid) {
+        // The LLM generated indented text instead of mermaid - retry with stronger prompt
+        console.warn(`LangGraphAgent: Invalid mermaid detected for "${topicTitle}", retrying...`);
+        
+        const retryPrompt = `The previous attempt did not produce valid Mermaid syntax.
+
+You MUST use proper Mermaid syntax. Here is a valid mindmap example for "${topicTitle}":
+
+\`\`\`mermaid
+mindmap
+  root((${topicTitle}))
+    KeyAspect1
+      Detail1A
+      Detail1B
+    KeyAspect2
+      Detail2A
+    KeyAspect3
+\`\`\`
+
+Or use a flowchart:
+
+\`\`\`mermaid
+graph TD;
+  A[${topicTitle}] --> B[Aspect 1];
+  A --> C[Aspect 2];
+  A --> D[Aspect 3];
+  B --> E[Detail 1];
+  C --> F[Detail 2];
+\`\`\`
+
+Output ONLY the valid mermaid code block:`;
+
+        const retryResponse = await this.model.invoke([
+          new SystemMessage(retryPrompt)
+        ]);
+        
+        const retryContent = retryResponse.content.toString();
+        const retryMatch = retryContent.match(/```mermaid\s*\n?([\s\S]*?)```/);
+        
+        if (retryMatch) {
+          diagramCode = retryMatch[0];
+          mermaidBody = retryMatch[1].trim();
+        }
       }
 
       // Add diagram to the canvas node
       await this.addDiagramToCanvas(roomId, topicPath, diagramCode);
+      
+      // Also add to memory manager
+      if (roomState?.memoryManager) {
+        await roomState.memoryManager.addEntry({
+          userId,
+          userName,
+          topic: `Diagram: ${topicTitle}`,
+          content: diagramCode,
+          tags: ['diagram', 'mermaid', 'topic-diagram'],
+          type: 'diagram',
+          importance: 7
+        });
+      }
 
       return {
         content: `I've created a diagram for "${topicTitle}". You can see it in the canvas above!`,
@@ -1203,6 +1384,12 @@ graph TD;
     
     // Delete the persistent canvas file
     CanvasState.deleteFromDisk(roomId);
+    
+    // Delete all memory storage
+    const roomState = this.roomStates.get(roomId);
+    if (roomState?.memoryManager) {
+      roomState.memoryManager.deleteAllStorage();
+    }
     
     await this.fileStorage.cleanupRoom(roomId);
     await this.vectorDB.cleanupRoom(roomId);
