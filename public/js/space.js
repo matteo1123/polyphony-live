@@ -115,11 +115,16 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log('Joined room:', data);
       isAdmin = data.isAdmin;
       groupChatEnabled = data.settings?.groupChatEnabled || false;
+      
+      console.log('Admin status:', isAdmin, 'Admin controls element:', adminControls);
 
       // Show admin controls if admin
       if (isAdmin) {
+        console.log('Showing admin controls');
         adminControls.classList.remove('hidden');
         groupChatToggle.checked = groupChatEnabled;
+      } else {
+        console.log('Not admin, keeping controls hidden');
       }
 
       updateChatMode();
@@ -617,9 +622,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (scroll) sharedCanvas.scrollTop = sharedCanvas.scrollHeight;
   }
 
+  // Decode HTML entities (e.g., &amp; -> &, --&gt; -> -->)
+  function decodeHtmlEntities(text) {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    return textarea.value;
+  }
+  
   // Process content to convert ```mermaid blocks to mermaid divs
   function processMermaidContent(content) {
     if (!content) return '';
+    
+    // First, decode any HTML entities in the content (LLM sometimes outputs &amp; instead of &)
+    content = decodeHtmlEntities(content);
     
     // Extract mermaid blocks BEFORE escaping HTML (backticks become entities after escapeHtml)
     const mermaidBlocks = [];
