@@ -1,0 +1,72 @@
+# Google Cloud Run Service Configuration - FREE TIER
+# Deploy with: gcloud run services replace service-free-tier.yaml
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: polyphony-live
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        # FREE TIER SETTINGS
+        # Scale to 0 when idle (saves money, cold start ~5s)
+        autoscaling.knative.dev/minScale: "0"
+        # NEVER scale beyond 1 (stay on free tier)
+        autoscaling.knative.dev/maxScale: "1"
+        # Timeout for long-running requests (file uploads)
+        run.googleapis.com/timeout: "300"
+        # Execution environment
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      # One instance handles all requests (up to 100 concurrent connections)
+      containerConcurrency: 100
+      containers:
+        - image: gcr.io/PROJECT_ID/polyphony-live:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            # Redis is internal (same container)
+            - name: REDIS_HOST
+              value: "localhost"
+            - name: REDIS_PORT
+              value: "6379"
+            # Convex URL from secret
+            - name: CONVEX_URL
+              valueFrom:
+                secretKeyRef:
+                  name: convex-url
+                  key: url
+            # Google AI API Key from secret
+            - name: GOOGLE_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-ai-key
+                  key: apikey
+          resources:
+            limits:
+              # FREE TIER LIMIT: 512MB
+              memory: "512Mi"
+              cpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            failureThreshold: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            failureThreshold: 3
+            periodSeconds: 30
+
+  traffic:
+    - percent: 100
+      latestRevision: true

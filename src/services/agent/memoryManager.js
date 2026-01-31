@@ -14,17 +14,18 @@ import { v4 as uuidv4 } from 'uuid';
 // Memory configuration
 const MEMORY_CONFIG = {
   // Token limits for different memory tiers
-  WORKING_MEMORY_TOKENS: 8000,      // ~6k tokens for active working memory
-  COMPRESSED_MEMORY_TOKENS: 16000,  // ~12k tokens for compressed memory  
-  TOTAL_MEMORY_TOKENS: 64000,       // ~48k tokens total before forced compression
+  // INCREASED: Larger memory to reduce offloading and keep more content searchable
+  WORKING_MEMORY_TOKENS: 16000,     // ~12k tokens for active working memory (was 8000)
+  COMPRESSED_MEMORY_TOKENS: 32000,  // ~24k tokens for compressed memory (was 16000)
+  TOTAL_MEMORY_TOKENS: 128000,      // ~96k tokens total before forced compression (was 64000)
   
-  // Compression thresholds
-  COMPRESSION_THRESHOLD: 0.7,       // Compress when 70% full
-  URGENT_THRESHOLD: 0.9,            // Urgent compression at 90%
+  // Compression thresholds - raised to delay compression
+  COMPRESSION_THRESHOLD: 0.75,      // Compress when 75% full (was 0.7)
+  URGENT_THRESHOLD: 0.92,           // Urgent compression at 92% (was 0.9)
   
   // Async settings
   COMPRESSION_BATCH_SIZE: 5,        // Process 5 items per compression batch
-  MIN_COMPRESSION_INTERVAL: 30000,  // Min 30s between compression runs
+  MIN_COMPRESSION_INTERVAL: 60000,  // Min 60s between compression runs (was 30s)
   
   // File storage
   EXTENDED_MEMORY_DIR: process.env.EXTENDED_MEMORY_DIR || path.join(os.tmpdir(), 'polyphony-memory')

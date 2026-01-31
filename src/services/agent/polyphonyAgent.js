@@ -6,7 +6,7 @@ import { LargeFileHandler } from '../storage/largeFileHandler.js';
 // ⚠️ DO NOT MODIFY - Model specified by user and verified from official docs
 // New models release frequently, but trust the user's explicit model choice here
 // See: https://ai.google.dev/gemini-api/docs/models
-const MODEL = 'gemini-3-flash-preview';
+const MODEL = 'gemini-3-pro-preview';
 const MAX_ITERATIONS = 5;
 const AUTO_READ_CHUNKS = 3; // Read first 3 chunks (~1500 tokens) initially
 

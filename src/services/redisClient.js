@@ -126,6 +126,55 @@ export class RedisClient {
       await this.client.del(keys);
       console.log(`🧹 Cleaned up ${keys.length} keys for room ${roomId}`);
     }
+    
+    // Remove from active rooms set
+    await this.client.sRem('active_rooms', roomId);
+  }
+
+  // Mark room as active (has vectors loaded)
+  async markRoomActive(roomId) {
+    await this.client.sAdd('active_rooms', roomId);
+    await this.client.hSet(`room:${roomId}:meta`, {
+      roomId,
+      activatedAt: Date.now(),
+      lastActivity: Date.now()
+    });
+  }
+
+  // Mark room as inactive (vectors cleared)
+  async markRoomInactive(roomId) {
+    await this.client.sRem('active_rooms', roomId);
+    await this.client.del(`room:${roomId}:meta`);
+  }
+
+  // Check if room is active
+  async isRoomActive(roomId) {
+    return await this.client.sIsMember('active_rooms', roomId);
+  }
+
+  // Get count of active rooms
+  async getActiveRoomCount() {
+    return await this.client.sCard('active_rooms');
+  }
+
+  // Get all active rooms with metadata
+  async getAllActiveRooms() {
+    const roomIds = await this.client.sMembers('active_rooms');
+    const rooms = [];
+    
+    for (const roomId of roomIds) {
+      const meta = await this.client.hGetAll(`room:${roomId}:meta`);
+      if (meta && meta.roomId) {
+        rooms.push(meta);
+      }
+    }
+    
+    return rooms;
+  }
+
+  // Update room activity timestamp
+  async updateRoomActivity(roomId) {
+    await this.client.hSet(`room:${roomId}:meta`, 'lastActivity', Date.now());
   }
 
   // Get client for direct redis operations

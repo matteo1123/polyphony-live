@@ -30,7 +30,7 @@ if (!fs.existsSync(CANVAS_STORAGE_DIR)) {
 // ⚠️ DO NOT MODIFY - Model specified by user and verified from official docs
 // New models release frequently, but trust the user's explicit model choice here
 // See: https://ai.google.dev/gemini-api/docs/models
-const MODEL_NAME = 'gemini-3-flash-preview';
+const MODEL_NAME = 'gemini-3-pro-preview';
 const MAX_ITERATIONS = 5;
 
 /**
