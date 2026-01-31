@@ -27,7 +27,10 @@ if (!fs.existsSync(CANVAS_STORAGE_DIR)) {
 }
 
 // Model configuration
-const MODEL_NAME = 'gemini-2.0-flash';
+// ⚠️ DO NOT MODIFY - Model specified by user and verified from official docs
+// New models release frequently, but trust the user's explicit model choice here
+// See: https://ai.google.dev/gemini-api/docs/models
+const MODEL_NAME = 'gemini-3-flash-preview';
 const MAX_ITERATIONS = 5;
 
 /**
@@ -386,12 +389,24 @@ Your task - Create a CANVAS that MODELS THE ACTUAL DISCUSSION:
 
 1. Identify the CENTRAL IDEA from what users are actually discussing
 2. Extract REAL THEMES from their messages (not generic templates)
-3. Organize by IMPORTANCE to the central topic:
-   - Level 1: Major concepts/themes from the conversation (3-5 items)
-   - Level 2: Supporting ideas (2-4 per Level 1)
-   - Level 3: Specific details/examples
-4. PRUNE off-topic or outdated info
-5. SYNTHESIZE the actual content
+3. DETECT CROSS-DOCUMENT CONNECTIONS:
+   - Look for CONFLICTS between different sources (e.g., PM requires X but Dev says Y is impossible)
+   - Look for DEPENDENCIES between documents (e.g., implementation requires both A and B)
+   - Look for ALIGNMENTS where sources agree or support each other
+4. Organize by IMPORTANCE to the central topic using THIS SPECIFIC SCORING:
+   - Level 1 (importance 10): Cross-document conflicts, tensions, or critical trade-offs - THESE ARE THE MOST VALUABLE
+   - Level 1 (importance 9): Cross-document synthesis or key alignments between sources
+   - Level 1 (importance 8): Major single-document insights with specific numbers/requirements
+   - Level 2 (importance 5-7): Supporting concepts from individual sources
+   - Level 3 (importance 3-4): Specific details and examples
+5. PRUNE off-topic or outdated info
+6. SYNTHESIZE across sources - connect the dots between different documents
+
+WHEN YOU IDENTIFY A CONFLICT (e.g., "PRD requires 5-min updates" vs "API doc shows 84.7% capacity"):
+- Create a specific node titled something like "Conflict: X vs Y"
+- Give it importance: 10
+- Include specific details from BOTH sources
+- This is MORE important than individual document summaries
 
 Respond in this JSON format:
 {
@@ -412,7 +427,13 @@ Respond in this JSON format:
   ]
 }
 
-Importance: 1-10 based on centrality to the actual discussion`;
+IMPORTANCE SCORING GUIDE:
+- 10: Critical cross-document conflict or tension (highest priority)
+- 9: Cross-document synthesis or significant alignment
+- 8: Key single-document insight with specific numbers/requirements
+- 5-7: Supporting concepts
+- 3-4: Background details
+- 1-2: Minor points`;
 
     const response = await this.model.invoke([
       new SystemMessage(refreshPrompt),
@@ -454,6 +475,97 @@ Importance: 1-10 based on centrality to the actual discussion`;
   }
 
   /**
+   * Detect synthesis questions that need multi-query retrieval
+   */
+  detectSynthesisPattern(query) {
+    const patterns = [
+      {
+        keywords: ['conflict', 'tension', 'disagree', 'opposing', 'clash', 'mismatch'],
+        queries: ['PM requirements priorities', 'developer constraints limitations', 'stakeholder priorities', 'technical constraints'],
+        name: 'conflict_detection'
+      },
+      {
+        keywords: ['compare', 'comparison', 'difference', 'differences', 'vs', 'versus', 'contrast'],
+        queries: ['PM perspective view', 'developer perspective view', 'different approaches'],
+        name: 'comparison'
+      },
+      {
+        keywords: ['budget', 'cost', 'price', 'financial', 'funding', 'expense'],
+        queries: ['budget cost financial', 'expense pricing cost', 'funding allocation'],
+        name: 'budget_analysis'
+      },
+      {
+        keywords: ['timeline', 'deadline', 'schedule', 'milestone', 'date', 'delivery'],
+        queries: ['timeline deadline date', 'schedule milestone delivery', 'release date'],
+        name: 'timeline_analysis'
+      },
+      {
+        keywords: ['priority', 'priorities', 'requirement', 'requirements', 'P0', 'critical'],
+        queries: ['priorities requirements', 'critical requirements', 'must have'],
+        name: 'priorities'
+      },
+      {
+        keywords: ['constraint', 'constraints', 'limitation', 'limitations', 'blocker', 'blocking'],
+        queries: ['constraints limitations', 'technical constraints', 'blocking issues'],
+        name: 'constraints'
+      },
+      {
+        keywords: ['both', 'either', 'impact', 'affect', 'relationship', 'connection'],
+        queries: ['cross-functional impact', 'stakeholder impact', 'dependencies'],
+        name: 'cross_cutting'
+      }
+    ];
+    
+    const queryLower = query.toLowerCase();
+    
+    for (const pattern of patterns) {
+      if (pattern.keywords.some(kw => queryLower.includes(kw))) {
+        return pattern;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Perform multi-query retrieval for synthesis questions
+   */
+  async performMultiQueryRetrieval(roomId, query, pattern) {
+    console.log(`LangGraphAgent: Using multi-query retrieval for ${pattern.name}: "${query.slice(0, 50)}..."`);
+    
+    const allResults = [];
+    const seenIds = new Set();
+    
+    // Execute multiple targeted queries
+    for (const subQuery of pattern.queries) {
+      const results = await this.vectorDB.searchKnowledge(roomId, subQuery, 6);
+      
+      for (const result of results) {
+        if (!seenIds.has(result.id)) {
+          seenIds.add(result.id);
+          allResults.push(result);
+        }
+      }
+    }
+    
+    // Also do a general query to catch anything missed
+    const generalResults = await this.vectorDB.searchKnowledge(roomId, query, 6);
+    for (const result of generalResults) {
+      if (!seenIds.has(result.id)) {
+        seenIds.add(result.id);
+        allResults.push(result);
+      }
+    }
+    
+    // Sort by score and take top results
+    allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
+    const finalResults = allResults.slice(0, 12);
+    
+    console.log(`LangGraphAgent: Multi-query retrieval found ${finalResults.length} unique results`);
+    return finalResults;
+  }
+
+  /**
    * Answer Question Node: Generate response to user question
    */
   async answerQuestionNode(state) {
@@ -469,12 +581,30 @@ Importance: 1-10 based on centrality to the actual discussion`;
     const query = lastMessage?.content 
       ? (typeof lastMessage.content === 'string' ? lastMessage.content : lastMessage.content.toString())
       : '';
-      
-    // Search for relevant knowledge
-    const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, query, 5);
     
-    // Build answer prompt
-    const answerPrompt = `You are the Polyphony Agent - a synthesis agent that helps users explore complex topics.
+    // Detect synthesis patterns and use multi-query retrieval if needed
+    const synthesisPattern = this.detectSynthesisPattern(query);
+    let relevantKnowledge;
+    
+    if (synthesisPattern) {
+      // Use multi-query retrieval for synthesis questions
+      relevantKnowledge = await this.performMultiQueryRetrieval(roomId, query, synthesisPattern);
+    } else {
+      // Standard single-query retrieval
+      relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, query, 5);
+    }
+    
+    // Build answer prompt with explicit grounding instructions
+    const answerPrompt = `You are the Polyphony Agent - a synthesis agent that helps users explore complex topics by grounding responses in the uploaded documents.
+
+CRITICAL INSTRUCTIONS - YOUR RESPONSES MUST BE GROUNDED:
+1. You MUST only reference specific facts, numbers, dates, requirements, and details from the RELEVANT KNOWLEDGE provided below
+2. NEVER produce generalized knowledge, platitudes, or training data (e.g., NEVER say "PMs often prioritize speed" - instead cite the specific requirement from the documents)
+3. Every claim must be traceable to a specific source with specific evidence
+4. ALWAYS cite your sources: mention document names, requirement IDs, and specific data points (e.g., "According to the PRD (FR-1), score updates must happen within 5 minutes")
+5. If you cannot find relevant information in the provided context, say "I don't have specific information about that in the uploaded documents" - DO NOT hallucinate
+6. When asked about conflicts, comparisons, or relationships between sources, ensure you cite evidence from ALL relevant perspectives
+7. Prefer specific numbers and requirements over general descriptions
 
 CURRENT CANVAS (Your evolving understanding of THIS conversation):
 Central Topic: ${currentCanvas?.centralIdea || 'Not yet established - waiting for user input'}
@@ -482,43 +612,44 @@ Central Topic: ${currentCanvas?.centralIdea || 'Not yet established - waiting fo
 Current Structure:
 ${JSON.stringify(currentCanvas?.hierarchy || [], null, 2)}
 
-Relevant Knowledge from this session:
-${relevantKnowledge.map(k => `- ${k.topic}: ${k.content.slice(0, 300)}...`).join('\n')}
+=== RELEVANT KNOWLEDGE (YOUR PRIMARY SOURCE OF TRUTH) ===
+${relevantKnowledge.map((k, i) => `
+[${i + 1}] SOURCE: "${k.topic}"
+    CONTENT: ${k.content.slice(0, 400)}${k.content.length > 400 ? '...' : ''}
+    ${k.tags ? `TAGS: ${k.tags.join(', ')}` : ''}
+`).join('\n')}
+=== END RELEVANT KNOWLEDGE ===
 
 AVAILABLE TOOLS:
-- contribute(type, title, content, importance, tags): Add insights to the collective understanding. This updates BOTH the canvas AND knowledge base automatically.
+- contribute(type, title, content, importance, tags): Add insights to the collective understanding. This updates BOTH the canvas AND knowledge base automatically. Use for synthesis, insights, and key findings.
 - refresh_canvas(reason): Rebuild the entire canvas when topic shifts significantly.
 - mermaid_visualize(mermaid_code): Create a Mermaid diagram and display it on the shared canvas. Use for flowcharts, sequence diagrams, mind maps, or any visual representation.
 
 WHEN TO USE contribute:
 - When you have a clear insight or concept to share
-- When you identify a key theme from the user's message
-- When synthesizing information from multiple sources
-- When explaining an important concept
+- When you identify cross-document connections, conflicts, or synthesis opportunities
+- When explaining an important concept grounded in the documents
+- When the user asks about conflicts, priorities, or comparisons
 
 WHEN TO USE mermaid_visualize:
 - When the user asks for a diagram, flowchart, or visual representation
-- When explaining complex relationships or processes
-- When the user explicitly requests a mermaid diagram
-- To visualize hierarchies, sequences, or flows
+- When explaining complex relationships or processes found in the documents
+- When visualizing conflicts or dependencies between different stakeholder requirements
 
 MERMAID EXAMPLES:
 - Flowchart: \`\`\`mermaid\ngraph TD;\n  A[Start] --> B{Decision};\n  B -->|Yes| C[Action];\n  B -->|No| D[End];\n\`\`\`
 - Sequence: \`\`\`mermaid\nsequenceDiagram;\n  participant A;\n  participant B;\n  A->>B: Message;\n\`\`\`
 
 EXAMPLES of good contribute calls:
-- contribute("concept", "Agentic Design Patterns", "Description of the pattern...", 9, ["agentic", "design-pattern"])
-- contribute("insight", "Tool Use is Critical", "Explanation of why tools matter...", 8, ["tools", "agentic"])
-- contribute("concept", "Existentialism's View on Meaning", "Existentialists believe...", 9, ["philosophy", "existentialism"])
+- contribute("insight", "PM vs Dev Priority Conflict", "PRD requires 5-min updates (FR-1) but API doc shows 84.7% capacity utilization...", 10, ["conflict", "PM", "developer", "priority"])
+- contribute("synthesis", "Budget Tension Analysis", "PM budgets $180K but dev flags $25-100K additional API costs...", 9, ["budget", "conflict", "cost"])
 
-CRITICAL INSTRUCTIONS:
+ADDITIONAL INSTRUCTIONS:
 1. The canvas represents YOUR UNDERSTANDING of what users are discussing - NOT a generic template
-2. If canvas is empty, start building it based on what the user just said
-3. Extract actual themes from their message (e.g., "philosophy", "meaning of life", "existentialism")
-4. NEVER talk about "hierarchical structuring" or "knowledge organization" as topics
-5. Instead, discuss the ACTUAL CONTENT: philosophy, life's meaning, etc.
-6. USE the contribute tool liberally - every significant insight should be captured
-7. Be conversational and engaging - ask follow-up questions to deepen understanding`;
+2. Extract actual themes from the documents (requirements, constraints, priorities)
+3. Cross-document conflicts and connections are the MOST valuable insights - prioritize these
+4. USE the contribute tool liberally for synthesis insights, especially when conflicts are identified
+5. Be conversational but always grounded in the specific document content provided above`;
 
     // Convert messages to proper format
     const messageHistory = messages.slice(-5).map(m => {
@@ -738,7 +869,24 @@ CRITICAL INSTRUCTIONS:
   }
   
   /**
+   * Detect if a contribution should be enriched with retrieved context
+   */
+  shouldEnrichContribution(type, title, tags) {
+    const enrichmentKeywords = ['synthesis', 'insight', 'conflict', 'comparison', 'summary'];
+    const titleLower = title.toLowerCase();
+    const typeLower = type.toLowerCase();
+    const tagsLower = tags.map(t => t.toLowerCase());
+    
+    return enrichmentKeywords.some(kw => 
+      titleLower.includes(kw) || 
+      typeLower.includes(kw) ||
+      tagsLower.some(t => t.includes(kw))
+    );
+  }
+
+  /**
    * Execute contribute tool - adds to canvas, knowledge base, and memory
+   * Now with retrieval enrichment for synthesis-type contributions
    */
   async executeContributeTool(args, context) {
     const { roomId, userId, userName } = context;
@@ -748,12 +896,63 @@ CRITICAL INSTRUCTIONS:
       throw new Error('contribute requires type, title, and content');
     }
     
-    // Add to knowledge base
+    let enhancedContent = content;
+    let sources = [];
+    
+    // NEW: Retrieve relevant knowledge to enrich synthesis contributions
+    if (this.shouldEnrichContribution(type, title, tags)) {
+      console.log(`LangGraphAgent: Enriching contribution "${title}" with retrieved context`);
+      
+      try {
+        // Retrieve relevant knowledge for this topic
+        const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, title, 8);
+        
+        if (relevantKnowledge.length > 0) {
+          sources = relevantKnowledge.map(k => k.topic);
+          
+          // Enhance content with retrieved context
+          const enrichmentPrompt = `Enhance the following contribution with specific details from the retrieved sources.
+
+ORIGINAL CONTRIBUTION:
+Title: ${title}
+Type: ${type}
+Content: ${content}
+
+RETRIEVED SOURCES (use these to add specific facts, numbers, and citations):
+${relevantKnowledge.map((k, i) => `
+[${i + 1}] ${k.topic}:
+${k.content.slice(0, 500)}${k.content.length > 500 ? '...' : ''}
+`).join('\n')}
+
+INSTRUCTIONS:
+1. Keep the original insights but enhance with specific facts, numbers, and details from the retrieved sources
+2. Cite specific sources when mentioning facts (e.g., "According to [source name]...")
+3. Identify any conflicts or connections between different sources
+4. If sources contain numbers, dates, or requirements, include them explicitly
+5. Maintain the original structure and purpose of the contribution
+
+Output the enhanced content only:`;
+
+          const response = await this.model.invoke([
+            new SystemMessage(enrichmentPrompt)
+          ]);
+          
+          enhancedContent = response.content.toString();
+          console.log(`LangGraphAgent: Enriched contribution with ${relevantKnowledge.length} sources`);
+        }
+      } catch (error) {
+        console.warn(`LangGraphAgent: Failed to enrich contribution "${title}":`, error.message);
+        // Fall back to original content
+        enhancedContent = content;
+      }
+    }
+    
+    // Add to knowledge base with enhanced content
     await this.vectorDB.createKnowledgeEntry(
       roomId,
       userId,
       title,
-      content,
+      enhancedContent,
       [...tags, type, 'contribution'],
       []
     );
@@ -765,7 +964,7 @@ CRITICAL INSTRUCTIONS:
         userId,
         userName,
         topic: title,
-        content,
+        content: enhancedContent,
         tags: [...tags, type, 'contribution'],
         type: 'contribution',
         importance
@@ -777,15 +976,16 @@ CRITICAL INSTRUCTIONS:
       id: `contrib-${Date.now()}`,
       type,
       title,
-      content,
+      content: enhancedContent,
       importance,
       userName: userName || 'Agent',
       timestamp: Date.now(),
-      tags
+      tags,
+      sources: sources.length > 0 ? sources : undefined
     };
     
     this.io.to(roomId).emit('canvas:update', { contribution });
-    console.log(`LangGraphAgent: contributed "${title}" to canvas and memory`);
+    console.log(`LangGraphAgent: contributed "${title}" to canvas and memory${sources.length > 0 ? ` (enriched with ${sources.length} sources)` : ''}`);
   }
   
   /**
@@ -1038,8 +1238,8 @@ Respond as JSON:
       const roomState = this.roomStates.get(roomId);
       const currentCanvas = roomState?.canvasState?.get();
 
-      // Get relevant knowledge about this topic
-      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 5);
+      // Get relevant knowledge about this topic (increased limit for better coverage)
+      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 8);
 
       // Build expansion prompt
       const expansionPrompt = `You are expanding on a specific topic from the canvas.
@@ -1160,8 +1360,8 @@ Respond with:
       const roomState = this.roomStates.get(roomId);
       const currentCanvas = roomState?.canvasState?.get();
 
-      // Get relevant knowledge about this topic
-      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 5);
+      // Get relevant knowledge about this topic (increased limit for better diagram content)
+      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, topicTitle, 8);
 
       // Build diagram generation prompt
       // Limit content length to avoid overwhelming the LLM

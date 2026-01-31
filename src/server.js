@@ -36,9 +36,22 @@ app.use(express.json());
 // Serve static files
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+// Health check endpoint - simple for demo
+app.get('/health', async (req, res) => {
+  try {
+    const activeRooms = await redisClient.getActiveRoomCount();
+    
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      activeMeetings: activeRooms
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'error', 
+      message: error.message 
+    });
+  }
 });
 
 // API: Create new space

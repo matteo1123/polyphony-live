@@ -3,8 +3,10 @@ import { geminiToolDeclarations } from '../tools/toolDefinitions.js';
 import { ToolExecutor } from '../tools/toolExecutor.js';
 import { LargeFileHandler } from '../storage/largeFileHandler.js';
 
-// DO NOT MODIFY - Model specified by user, verified from docs
-const MODEL = 'gemini-2.0-flash';
+// ⚠️ DO NOT MODIFY - Model specified by user and verified from official docs
+// New models release frequently, but trust the user's explicit model choice here
+// See: https://ai.google.dev/gemini-api/docs/models
+const MODEL = 'gemini-3-flash-preview';
 const MAX_ITERATIONS = 5;
 const AUTO_READ_CHUNKS = 3; // Read first 3 chunks (~1500 tokens) initially
 
@@ -120,6 +122,30 @@ export class PolyphonyAgent {
     this.addToCanvas(roomId, contribution);
   }
 
+  // Detect if a query is asking for synthesis/comparison/conflict analysis
+  isSynthesisQuestion(query) {
+    const synthesisKeywords = [
+      'conflict', 'conflicts', 'compare', 'comparison', 'difference', 'differences',
+      'both', 'vs', 'versus', 'priorities', 'tension', 'tensions', 'trade-off', 
+      'tradeoff', 'trade off', 'how does', 'affect', 'impact', 'synthesize',
+      'relationship', 'relationships', 'connection', 'connections', 'contrast',
+      'opposing', 'alignment', 'align', 'misalignment', 'gap', 'gaps',
+      'pm', 'developer', 'dev', 'stakeholder', 'requirement', 'requirements',
+      'constraint', 'constraints', 'limitation', 'limitations', 'budget', 'timeline'
+    ];
+    const queryLower = query.toLowerCase();
+    return synthesisKeywords.some(kw => queryLower.includes(kw.toLowerCase()));
+  }
+
+  // Get retrieval limit based on query type
+  getRetrievalLimit(query) {
+    // For synthesis questions, retrieve more chunks to ensure diverse perspectives
+    if (this.isSynthesisQuestion(query)) {
+      return 12; // Increased from 5 for cross-document synthesis
+    }
+    return 5;
+  }
+
   // Main message handler with ReAct loop
   async handleMessage(roomId, userId, userName, socketId, content, conversationHistory = []) {
     const context = { roomId, userId, userName, socketId };
@@ -127,7 +153,14 @@ export class PolyphonyAgent {
 
     try {
       // Search for relevant knowledge first
-      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, content, 5);
+      // Use increased limit for synthesis questions to get diverse perspectives
+      const retrievalLimit = this.getRetrievalLimit(content);
+      const relevantKnowledge = await this.vectorDB.searchKnowledge(roomId, content, retrievalLimit);
+      
+      if (retrievalLimit > 5) {
+        console.log(`Agent: Using expanded retrieval (${retrievalLimit} chunks) for synthesis question: "${content.slice(0, 50)}..."`);
+      }
+      
       const files = this.fileStorage.listRoomFiles(roomId);
 
       // Build system prompt
@@ -344,44 +377,55 @@ Please analyze and create knowledge entries for key concepts.`;
     const groupChatEnabled = roomState?.settings?.groupChatEnabled ?? false;
     const canvas = roomState?.canvas || [];
 
-    let prompt = `You are a knowledge synthesis agent. Use the provided tools to process knowledge and update the shared canvas.
+    let prompt = `You are a knowledge synthesis agent for Polyphony.live. Your responses MUST be grounded in the uploaded documents and previously extracted knowledge.
+
+CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
+1. You MUST only reference specific facts, numbers, dates, requirements, and details from the uploaded documents and knowledge base
+2. NEVER produce generalized knowledge, platitudes, or training data (e.g., NEVER say "PMs often prioritize speed" - instead cite the specific requirement from the PRD)
+3. Every claim must be traceable to a specific document with specific evidence
+4. ALWAYS cite your sources: mention document names, requirement IDs, and specific data points (e.g., "According to the PRD (FR-1), score updates must happen within 5 minutes")
+5. If you cannot find relevant information in the provided context, say "I don't have specific information about that in the uploaded documents" - DO NOT hallucinate
+6. When comparing, finding conflicts, or synthesizing across sources, use search_knowledge to retrieve content from ALL relevant perspectives before responding
+7. Prefer specific numbers and requirements over general descriptions
+
+You have access to these tools:
+- search_knowledge(query, limit): Query the vector database for specific information. Use this liberally to find relevant facts.
+- read_file_section(file_id, start_chunk, end_chunk): Read specific parts of uploaded documents
+- contribute(type, title, content, importance, tags): Add synthesized insights to the shared canvas
+- mermaid_visualize(mermaid_code): Create diagrams when requested
 `;
 
     if (!groupChatEnabled) {
-      prompt += `IMPORTANT - MEDIATION MODE: Converse privately, but use the add_to_canvas tool to share high-level, diplomatic insights with all users.
-`;
+      prompt += `\nIMPORTANT - MEDIATION MODE: Converse privately with the user, but use the contribute tool to share high-level, diplomatic insights with all users on the shared canvas.\n`;
     }
 
-    prompt += `Tools available:
+    prompt += `\nWhen asked to create a diagram, flowchart, sequence diagram, mind map, or any structured visualization, you MUST use the mermaid_visualize tool. Pass the complete Mermaid markdown block (including triple backticks and "mermaid" language identifier) as the mermaid_code parameter. Explain the diagram to the user before posting the code.\n`;
 
-When asked to create a diagram, flowchart, sequence diagram, mind map, or any structured visualization, you MUST use the mermaid_visualize tool. Pass the complete Mermaid markdown block (including triple backticks and "mermaid" language identifier) as the mermaid_code parameter. Explain the diagram to the user before posting the code.
-`;
-
-    // Show recent canvas items for context
-    /*
-    if (canvas.length > 0) {
-      prompt += `\nRecent contributions on the shared canvas:\n`;
-      const recentCanvas = canvas.slice(-10);
-      for (const item of recentCanvas) {
-        prompt += `- [${item.type}] ${item.userName}: ${item.content.slice(0, 150)}${item.content.length > 150 ? '...' : ''}\n`;
-      }
-      prompt += `\n`;
-    }
-
+    // Include relevant knowledge in context - THIS IS CRITICAL FOR GROUNDING
     if (relevantKnowledge.length > 0) {
-      prompt += `\nRelevant knowledge from the space:\n`;
-      for (const entry of relevantKnowledge) {
-        prompt += `- "${entry.topic}": ${entry.content.slice(0, 200)}${entry.content.length > 200 ? '...' : ''}\n`;
+      prompt += `\n=== RELEVANT KNOWLEDGE FROM VECTOR SEARCH ===\n`;
+      prompt += `The following content was retrieved based on the user's query. Use this as your PRIMARY source of truth:\n\n`;
+      for (let i = 0; i < relevantKnowledge.length; i++) {
+        const entry = relevantKnowledge[i];
+        prompt += `[${i + 1}] SOURCE: "${entry.topic}"\n`;
+        prompt += `    CONTENT: ${entry.content.slice(0, 400)}${entry.content.length > 400 ? '...' : ''}\n`;
+        if (entry.tags && entry.tags.length > 0) {
+          prompt += `    TAGS: ${entry.tags.join(', ')}\n`;
+        }
+        prompt += `\n`;
       }
+      prompt += `=== END RELEVANT KNOWLEDGE ===\n`;
+    } else {
+      prompt += `\n=== NO RELEVANT KNOWLEDGE FOUND ===\n`;
+      prompt += `The vector search returned no results. You should use the search_knowledge tool with different query terms to find relevant information, or inform the user that no relevant documents have been uploaded.\n`;
     }
-    */
 
     if (files.length > 0) {
-      prompt += `\nUploaded files available:\n`;
+      prompt += `\n=== UPLOADED FILES ===\n`;
       for (const file of files) {
         prompt += `- ${file.fileName} (${file.pageCount} pages, ID: ${file.fileId})\n`;
       }
-      prompt += `\nUse read_file_section to access file contents.\n`;
+      prompt += `\nUse read_file_section(file_id, start_chunk, end_chunk) to access specific file contents when needed.\n`;
     }
 
     return prompt;

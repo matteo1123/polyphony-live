@@ -621,15 +621,24 @@ document.addEventListener('DOMContentLoaded', () => {
   function processMermaidContent(content) {
     if (!content) return '';
     
-    // Escape HTML first, then replace mermaid blocks
-    let escaped = escapeHtml(content);
-    
-    // Convert ```mermaid ... ``` blocks to mermaid divs
-    escaped = escaped.replace(/```mermaid\n?([\s\S]*?)```/g, function(match, code) {
-      return '<div class="mermaid">' + code.trim() + '</div>';
+    // Extract mermaid blocks BEFORE escaping HTML (backticks become entities after escapeHtml)
+    const mermaidBlocks = [];
+    let processed = content.replace(/```mermaid\n?([\s\S]*?)```/g, function(match, code) {
+      const placeholder = `__MERMAID_BLOCK_${mermaidBlocks.length}__`;
+      mermaidBlocks.push(code.trim());
+      return placeholder;
     });
     
-    return escaped;
+    // Now escape HTML on the remaining content
+    processed = escapeHtml(processed);
+    
+    // Replace placeholders with actual mermaid divs (code is NOT escaped - mermaid needs raw syntax)
+    mermaidBlocks.forEach((code, index) => {
+      const placeholder = `__MERMAID_BLOCK_${index}__`;
+      processed = processed.replace(placeholder, `<div class="mermaid">${code}</div>`);
+    });
+    
+    return processed;
   }
 
   // Render hierarchical canvas (LangGraph agent's understanding)
